@@ -1,0 +1,173 @@
+category: Facilities & Physical Security
+code: FAC
+layer: GPU & Physical Infrastructure
+added: true
+scope: DCIM, BMS, PDUs / UPS, liquid cooling (CDU), leak detection, physical access control (PACS), CCTV, GPU asset custody
+usecases:
+
+  - id: FAC-001
+    name: Liquid-cooling setpoint written from an unauthorized host
+    severity: Critical
+    description: >-
+      Racks drawing 100 kW and up, such as GB200 NVL72, depend on coolant distribution units. A setpoint write or pump
+      command from a host that is not an engineering workstation can throttle or damage a whole GPU row within
+      minutes.
+    log_sources:
+      - OT network monitoring (Nozomi, Claroty, Dragos, Zeek ICS parsers)
+      - BMS / DCIM audit logs
+    detection: >-
+      BACnet WriteProperty or Modbus write commands to CDU, chiller or pump controllers from sources outside the
+      engineering allow-list, or setpoint changes beyond safe limits.
+    mappings: [T0836, T0855, T0831]
+    sample_log: |
+      {"time":"2026-11-12T02:31:18Z","sensor":"ot-ids-dh2","protocol":"BACnet/IP","src_ip":"10.20.31.144","src_asset":"unknown workstation","dst_ip":"10.250.4.21","dst_asset":"CDU-R07-A (liquid cooling, GPU row 7)","service":"WriteProperty","object":"analog-value,12","property":"present-value","value":45.0,"previous_value":30.0,"units":"degrees-celsius","priority":8,"alert":"Setpoint write from host not in engineering allow-list"}
+
+  - id: FAC-002
+    name: Coolant leak or pressure loss correlated with GPU thermal throttling
+    severity: Critical
+    description: >-
+      A leak or loss of secondary-loop pressure appears in the DCIM seconds before GPUs hit thermal slowdown.
+      Correlating the two separates a real cooling event from a sensor fault and drives an immediate workload drain.
+    log_sources:
+      - DCIM / BMS alarms (leak detection, loop pressure)
+      - NVIDIA DCGM metrics (temperature, clock throttle reasons)
+    detection: >-
+      A leak or pressure alarm on a CDU or rack manifold, followed within 5 minutes by DCGM HW slowdown or thermal
+      throttle reasons on GPUs in the same rack.
+    sample_log: |
+      2026-11-12T02:44:10Z dcim-01 ALARM CRITICAL point=DH2/ROW07/CDU-R07-A/LeakDetect-Zone3 state=ACTIVE value=WET
+      2026-11-12T02:44:12Z dcim-01 ALARM MAJOR point=DH2/ROW07/CDU-R07-A/SecondaryLoop/Pressure value=1.1bar threshold_low=1.6bar
+      DCGM_FI_DEV_GPU_TEMP{gpu="5",Hostname="dgx-b200-r07-n03",modelName="NVIDIA B200"} 91
+      DCGM_FI_DEV_CLOCK_THROTTLE_REASONS{gpu="5",Hostname="dgx-b200-r07-n03",modelName="NVIDIA B200"} 72
+
+  - id: FAC-003
+    name: PDU outlets switched off remotely on GPU racks
+    severity: High
+    description: >-
+      Switched PDUs can power-cycle any server. Remote off or cycle commands on GPU rack outlets outside maintenance
+      kill multi-node jobs, and can also be used to cover physical tampering.
+    log_sources:
+      - Intelligent PDU syslog / SNMP traps (Raritan, Vertiv, APC)
+      - DCIM audit logs
+    detection: >-
+      Outlet off or cycle events on GPU racks outside approved maintenance, from users or hosts other than DCIM
+      automation, or SNMP SET commands from non-DCIM sources.
+    mappings: [T0816, T1529]
+    sample_log: |
+      <13>Nov 12 03:02:11 pdu-r07-a PX3: Outlet 12 'dgx-b200-r07-n03 PSU1' power state changed to off by user 'admin' from host '10.20.31.144'.
+      <13>Nov 12 03:02:12 pdu-r07-a PX3: Outlet 13 'dgx-b200-r07-n03 PSU2' power state changed to off by user 'admin' from host '10.20.31.144'.
+
+  - id: FAC-004
+    name: Default credentials or firmware change on UPS and PDU controllers
+    severity: High
+    description: >-
+      Power gear management cards often keep factory credentials. Logins with them, or firmware uploads, give an
+      attacker the ability to drop power to the GPU halls.
+    log_sources:
+      - UPS / PDU network management card logs
+      - OT network monitoring
+    detection: >-
+      Logins with default accounts (apc, admin, device), logins from outside the facilities management subnet, or any
+      firmware upload outside a change.
+    mappings: [T0812, T0857]
+    sample_log: |
+      <14>Nov 12 03:20:41 ups-dh2-02 APC: Web user 'apc' logged in from 10.20.31.144.
+      <14>Nov 12 03:24:02 ups-dh2-02 APC: Firmware upgrade started: file uploaded via FTP by user 'apc' from 10.20.31.144.
+
+  - id: FAC-005
+    name: Building-management alarms suppressed or rerouted
+    severity: High
+    description: >-
+      Disabling alarm routing for cooling-critical points, or raising thresholds across many points, means real
+      thermal or leak events will not reach operators. It is a precursor to physical-impact attacks.
+    log_sources:
+      - BMS audit logs (Niagara, Metasys, EcoStruxure)
+      - DCIM audit logs
+    detection: >-
+      Alarm class routing set to none, acknowledgement requirements removed, or threshold changes across more than 20
+      points, without a facilities change ticket.
+    mappings: [T0878, T0838]
+    sample_log: |
+      {"ts":"2026-11-12T03:40:09Z","system":"bms-niagara-01","user":"facility-eng2","src_ip":"10.20.31.144","action":"alarm_class_modify","alarm_class":"Cooling-Critical","change":{"routing":"none","ack_required":false},"points_affected":148,"change_ticket":null}
+
+  - id: FAC-006
+    name: GPU cage access outside schedule or with a revoked badge
+    severity: High
+    description: >-
+      GPU cages hold equipment worth tens of millions and parts subject to export controls. Access outside a person's
+      schedule, without the required escort, or attempts with revoked credentials need follow-up.
+    log_sources:
+      - Physical access control system (Lenel, Genetec, C-CURE)
+    detection: >-
+      Access granted to GPU halls or cages outside the cardholder's schedule or without an escort when one is required,
+      denied attempts with revoked or expired credentials, or the same badge at distant doors in an impossible time.
+    sample_log: |
+      {"timestamp":"2026-11-12T02:13:44Z","system":"pacs","site":"DC-East","door":"DH2-GPU-CAGE-07","reader":"IN","cardholder":"Contractor-Temp-118","credential":"0x3A41F2","event":"AccessGranted","schedule":"Business hours (Mon-Fri 08:00-18:00)","violation":"outside_schedule","escort_required":true,"escort_badge":null}
+
+  - id: FAC-007
+    name: Door held open or tailgating at a GPU hall
+    severity: High
+    description: >-
+      Door-held and forced-open alarms combined with CCTV people counts show people entering without their own badge
+      event. That is the most common way unauthorized people get to the racks.
+    log_sources:
+      - Physical access control system
+      - Video management / CCTV analytics
+    detection: >-
+      Door held open longer than 30 seconds, door forced events, or more people counted through a GPU hall door than
+      badge events in the same 10-second window.
+    sample_log: |
+      2026-11-12T02:14:02Z pacs DH2-GPU-CAGE-07 event=DoorHeldOpen duration_s=74
+      2026-11-12T02:14:05Z vms cam=DH2-C07-IN analytics=PeopleCount count=3 badge_events_10s=1 verdict=tailgating
+
+  - id: FAC-008
+    name: Cage entry followed by a hardware change on the same rack
+    severity: Critical
+    description: >-
+      Correlating physical and cyber events catches what neither sees alone. A badge-in, then a chassis-open, a new USB
+      device or a link change on the same rack within minutes is a hardware implant or theft in progress.
+    log_sources:
+      - Physical access control system
+      - BMC SEL (chassis intrusion)
+      - Linux kernel log (USB) and switch link events
+    detection: >-
+      Within 30 minutes of access to a cage, a chassis intrusion, new USB mass-storage device, NIC link change or GPU
+      inventory change on a rack inside it, with no linked maintenance ticket.
+    mappings: [T1200, T1052.001]
+    sample_log: |
+      {"rule":"cage-entry-then-hardware-change","window_min":30,"rack":"DH2-ROW07-R07","events":[{"ts":"2026-11-12T02:13:44Z","src":"pacs","event":"AccessGranted","door":"DH2-GPU-CAGE-07","cardholder":"Contractor-Temp-118"},{"ts":"2026-11-12T02:31:09Z","src":"bmc-sel","host":"dgx-b200-r07-n03","event":"General Chassis intrusion Asserted"},{"ts":"2026-11-12T02:33:40Z","src":"kernel","host":"dgx-b200-r07-n03","event":"usb 1-4: New USB device found, idVendor=0781, idProduct=5583"}],"change_ticket":null}
+
+  - id: FAC-009
+    name: GPU missing or swapped compared with the asset register
+    severity: High
+    description: >-
+      Data-center GPUs are high-value, export-controlled items (ECCN 3A090). A GPU serial that disappears from a server,
+      or an unknown serial that appears, can mean theft, diversion or a gray-market swap.
+    log_sources:
+      - GPU inventory collector (nvidia-smi / DCGM serials and UUIDs)
+      - CMDB / asset management
+    detection: >-
+      Daily reconciliation where the observed GPU count or serials differ from the CMDB for a server, with no open RMA
+      or maintenance ticket.
+    sample_log: |
+      {"ts":"2026-11-12T04:00:00Z","job":"gpu-inventory-reconcile","host":"dgx-b200-r07-n03","cmdb_gpu_count":8,"observed_gpu_count":7,"missing":[{"slot":5,"serial":"1653124009876","uuid":"GPU-5d1e2f3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a"}],"new_unregistered":[],"rma_ticket":null,"export_control_tag":"ECCN-3A090"}
+
+  - id: FAC-010
+    name: USB storage device connected to a GPU server
+    severity: Medium
+    description: >-
+      GPU servers have no business reason for removable media in production. A USB drive can carry weights out, or
+      carry an implant in, without crossing the network.
+    log_sources:
+      - Linux kernel log (udev / usb-storage)
+      - EDR device-control events
+    detection: >-
+      Any USB mass-storage attach on production GPU, storage or management hosts. Escalate when it follows cage access
+      (FAC-008) or large local file reads.
+    mappings: [T1052.001, T1091]
+    sample_log: |
+      Nov 12 02:33:40 dgx-b200-r07-n03 kernel: usb 1-4: new high-speed USB device number 7 using xhci_hcd
+      Nov 12 02:33:40 dgx-b200-r07-n03 kernel: usb 1-4: New USB device found, idVendor=0781, idProduct=5583, bcdDevice= 1.00
+      Nov 12 02:33:40 dgx-b200-r07-n03 kernel: usb 1-4: Product: Ultra Fit
+      Nov 12 02:33:40 dgx-b200-r07-n03 kernel: usb-storage 1-4:1.0: USB Mass Storage device detected
+      Nov 12 02:33:41 dgx-b200-r07-n03 kernel: sd 7:0:0:0: [sdb] 245235712 512-byte logical blocks: (126 GB/117 GiB)

@@ -1,0 +1,116 @@
+category: Multi-Tenancy & GPU Abuse
+code: TEN
+layer: Platform & Pipeline
+added: true
+scope: GPU-as-a-service tenants, tenant isolation (VRF / VNI / partitions), node sanitization, quotas, billing fraud, abuse desk
+usecases:
+
+  - id: TEN-001
+    name: Fraudulent sign-ups launching GPU capacity
+    severity: High
+    description: >-
+      GPU clouds attract sign-up fraud: stolen cards and throwaway emails used to launch multi-GPU instances for mining
+      or cracking until the chargebacks arrive.
+    log_sources:
+      - Customer portal / billing logs
+      - Instance provisioning API logs
+    detection: >-
+      GPU instances launched within 30 minutes of account creation, many accounts sharing a device fingerprint or card
+      BIN, disposable email domains, or 3-D Secure not attempted on high-value launches.
+    mappings: [T1585.003, T1496.001]
+    sample_log: |
+      {"ts":"2026-11-12T04:12:09Z","service":"gpu-cloud-portal","event":"instance.create","account_id":"acct-77120","account_age_min":11,"email_domain":"mail-temp.example","payment":{"bin":"412345","card_country":"BR","3ds":"not_attempted"},"device_fingerprint":"fp-8a1c2e","signups_same_fingerprint_24h":23,"client_ip":"198.51.100.201","instance_type":"8x-H100-SXM","count":4,"region":"us-east-2"}
+
+  - id: TEN-002
+    name: Traffic crossing tenant isolation boundaries
+    severity: Critical
+    description: >-
+      Tenants share spine switches, storage and sometimes InfiniBand fabric. Any forwarded flow between two tenants'
+      VNIs or VRFs with no peering means isolation has failed. That is the core promise of a multi-tenant GPU cloud.
+    log_sources:
+      - Fabric flow telemetry (sFlow / IPFIX with VNI)
+      - EVPN / VRF route and ACL logs
+    detection: >-
+      Forwarded flows where the source and destination resolve to different tenants without an approved peering, or
+      routes leaking between tenant VRFs.
+    mappings: [T1599]
+    sample_log: |
+      {"ts":"2026-11-12T05:02:41Z","exporter":"leaf-gpu-11","src_ip":"10.128.4.21","dst_ip":"10.129.7.12","src_vni":120041,"dst_vni":120077,"src_tenant":"t-4471","dst_tenant":"t-1093","proto":"TCP","dst_port":22,"bytes":18231,"packets":44,"action":"forwarded","expected":"deny (no tenant peering)"}
+
+  - id: TEN-003
+    name: Bare-metal node returned to the pool without full sanitization
+    severity: High
+    description: >-
+      Before a bare-metal GPU node goes to the next tenant, local NVMe must be wiped, GPU memory cleared, and BMC and
+      firmware reset to golden. Skipping a step can leak the previous tenant's data or leave their implant behind.
+    log_sources:
+      - Bare-metal provisioning / lifecycle workflow logs
+    detection: >-
+      Node state moving to available with any sanitization step skipped, failed or overridden (NVMe secure erase, GPU
+      reset, BMC reset, firmware attestation).
+    mappings: [T1005]
+    sample_log: |
+      {"ts":"2026-11-12T05:30:12Z","service":"bare-metal-provisioner","node":"h100-pool-b-n0412","previous_tenant":"t-4471","state_transition":"releasing -> available","workflow":{"nvme_secure_erase":"skipped","gpu_reset_and_memory_clear":"success","bmc_reset_to_golden":"skipped","firmware_attestation":"not_run"},"operator":"svc-fleet-automation","override_flag":"--force-available"}
+
+  - id: TEN-004
+    name: Tenant instance scanning or attacking the internet
+    severity: High
+    description: >-
+      Compromised or malicious tenant instances get used for mass scanning, brute force and DDoS. The provider's IP
+      reputation suffers and abuse complaints follow.
+    log_sources:
+      - Border flow logs (NetFlow / IPFIX)
+      - Abuse desk / complaint feeds
+    detection: >-
+      A tenant instance contacting more than 1,000 distinct external IPs per minute on one port with mostly SYN-only
+      flows, outbound SMTP floods, or abuse reports against tenant IPs.
+    mappings: [T1595.001, T1498]
+    sample_log: |
+      {"ts":"2026-11-12T06:00:00Z","exporter":"border-01","tenant":"t-9120","instance":"i-tn9120-4","src_ip":"192.0.2.44","window_s":60,"distinct_dst_ips":18211,"dst_port":22,"syn_only_ratio":0.97,"bytes_out":91231211,"abuse_reports_24h":2}
+
+  - id: TEN-005
+    name: Password cracking or mining on tenant GPUs (acceptable-use violation)
+    severity: Medium
+    description: >-
+      Where contracts allow process telemetry, hashcat, john or miners on tenant GPUs breach acceptable use and usually
+      signal a fraudulent or compromised account.
+    log_sources:
+      - DCGM job / process statistics
+      - Network flow logs (mining pools)
+    detection: >-
+      GPU process names that match cracking or mining tools at sustained high SM utilization, or tenant flows to
+      mining pools, on contracts that allow this telemetry.
+    mappings: [T1110.002, T1496.001]
+    sample_log: |
+      {"ts":"2026-11-12T06:31:02Z","collector":"dcgm-job-stats","tenant":"t-9120","node":"h100-pool-c-n0233","gpu_uuid":"GPU-7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d","process_name":"hashcat","sm_util_avg_1h":99.2,"power_avg_w":688.4,"aup_category":"credential_cracking","contract_allows_process_telemetry":true}
+
+  - id: TEN-006
+    name: Tenant probing provider management networks
+    severity: High
+    description: >-
+      Tenant networks should never reach BMC, UFM, NVSwitch management, provisioning or metadata internals. Denied
+      attempts show a tenant looking for a way into the provider's control plane.
+    log_sources:
+      - Tenant-edge firewall logs
+      - Fabric ACL deny logs
+    detection: >-
+      10 or more denied flows from a tenant VRF to provider management ranges (OOB, fabric management, provisioning)
+      within 10 minutes, or any allowed flow to those ranges.
+    mappings: [T1046, T1599]
+    sample_log: |
+      <14>Nov 12 07:02:31 pa-tenant-edge 1,2026/11/12 07:02:31,013201005678,TRAFFIC,deny,2817,2026/11/12 07:02:31,10.128.4.21,10.200.11.104,0.0.0.0,0.0.0.0,deny-tenant-to-oob,,,ipmi,vsys2,tenant-t4471,oob-bmc,ae1.4471,ae2.200,Log-to-SIEM,2026/11/12 07:02:31,0,1,49122,623,0,0,0x0,udp,deny,88,88,0,1,2026/11/12 07:02:31,0,any,0,7311204,0x0,10.0.0.0-10.255.255.255,10.0.0.0-10.255.255.255,0,1,0,policy-deny
+
+  - id: TEN-007
+    name: Tenant API key used against other tenants' resources
+    severity: High
+    description: >-
+      A burst of tenant-mismatch denials on the provider API means one tenant is enumerating volumes, snapshots or
+      clusters that belong to others. One missing authorization check turns that into cross-tenant access.
+    log_sources:
+      - Provider control-plane API logs
+    detection: >-
+      More than 20 tenant_mismatch denials for one API key in 10 minutes, attempts against more than 5 distinct target
+      tenants, or any successful cross-tenant read.
+    mappings: ["API1:2023", T1078.004]
+    sample_log: |
+      {"ts":"2026-11-12T07:30:44Z","service":"gpu-cloud-api","route":"GET /v1/tenants/t-1093/volumes/vol-88123/snapshots","caller_tenant":"t-4471","api_key_id":"key-t4471-02","status":403,"reason":"tenant_mismatch","window_10m":{"tenant_mismatch_403":412,"distinct_target_tenants":37}}

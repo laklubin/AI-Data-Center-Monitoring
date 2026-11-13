@@ -1,0 +1,218 @@
+category: GPU Infrastructure
+code: GPU
+layer: GPU & Physical Infrastructure
+scope: NVIDIA GPUs, NVIDIA DCGM, GPU Operator, GPU drivers, MIG, GPU allocation and scheduling
+usecases:
+
+  - id: GPU-001
+    name: Cryptomining on GPUs (sustained load with no scheduled job)
+    severity: High
+    description: >-
+      Mining shows up as GPUs pinned near 100% SM utilization and high power draw with no Slurm job or Kubernetes pod
+      allocated, or as compute processes named like known miners.
+    log_sources:
+      - NVIDIA DCGM Exporter metrics (Prometheus)
+      - nvidia-smi process accounting / pmon
+      - Slurm / Kubernetes allocation data
+    detection: >-
+      DCGM_FI_DEV_GPU_UTIL above 90% for more than 30 minutes on a GPU with empty pod/namespace labels and no active
+      Slurm job, or a GPU process name matching miner signatures (xmrig, t-rex, lolminer, nbminer, gminer, teamredminer).
+    mappings: [T1496.001]
+    sample_log: |
+      DCGM_FI_DEV_GPU_UTIL{gpu="3",UUID="GPU-8f2c1a7e-5b3d-4e9f-a1c2-7d6e5f4a3b21",device="nvidia3",modelName="NVIDIA H100 80GB HBM3",Hostname="dgx-h100-r04-n11",DCGM_FI_DRIVER_VERSION="570.172.08",container="",namespace="",pod=""} 99
+      DCGM_FI_DEV_POWER_USAGE{gpu="3",UUID="GPU-8f2c1a7e-5b3d-4e9f-a1c2-7d6e5f4a3b21",device="nvidia3",modelName="NVIDIA H100 80GB HBM3",Hostname="dgx-h100-r04-n11",container="",namespace="",pod=""} 612.4
+      # nvidia-smi pmon -c 1 (node agent, dgx-h100-r04-n11)
+      # gpu         pid   type     sm    mem    enc    dec    jpg    ofa    command
+          3     2214577      C     98     61      -      -      -      -    t-rex
+
+  - id: GPU-002
+    name: Critical GPU Xid errors (fallen off bus, uncorrectable ECC, NVLink)
+    severity: High
+    description: >-
+      Xid errors in the NVIDIA kernel driver flag GPUs that have stopped responding, lost memory integrity or dropped
+      NVLink. They take down multi-node training jobs. A sudden cluster of them can also point to tampering, firmware
+      problems or deliberately malformed kernels.
+    log_sources:
+      - Linux kernel log (dmesg / journald, NVRM messages)
+      - NVIDIA DCGM health checks
+    detection: >-
+      Any Xid in 48, 63, 64, 74, 79, 92, 94, 95, 119 or 120 opens an incident against the node. Repeated Xid 13, 31 or
+      43 on the same GPU within an hour, tied to a single user's jobs, deserves a security look.
+    sample_log: |
+      Nov 12 04:31:07 dgx-h100-r04-n11 kernel: NVRM: GPU at PCI:0000:9b:00: GPU-8f2c1a7e-5b3d-4e9f-a1c2-7d6e5f4a3b21
+      Nov 12 04:31:07 dgx-h100-r04-n11 kernel: NVRM: GPU Board Serial Number: 1652023012345
+      Nov 12 04:31:07 dgx-h100-r04-n11 kernel: NVRM: Xid (PCI:0000:9b:00): 79, pid='<unknown>', name=<unknown>, GPU has fallen off the bus.
+      Nov 12 04:31:07 dgx-h100-r04-n11 kernel: NVRM: GPU 0000:9b:00.0: GPU has fallen off the bus.
+
+  - id: GPU-003
+    name: GPU driver or kernel module loaded from an unexpected path
+    severity: High
+    description: >-
+      The NVIDIA driver modules (nvidia, nvidia_uvm, nvidia_peermem, nvidia_drm) run in ring 0 with access to all GPU
+      memory. Loading unsigned or out-of-path modules, or drifting from the golden driver version, is a rootkit-grade
+      event.
+    log_sources:
+      - Linux auditd (init_module / finit_module / delete_module)
+      - Linux kernel log (module taint messages)
+      - DCGM driver version labels
+    detection: >-
+      finit_module or init_module of any .ko from /tmp, /home or /dev/shm, a "module verification failed" taint on a
+      GPU node, or a DCGM_FI_DRIVER_VERSION that differs from the node image's golden version.
+    mappings: [T1547.006, T1014]
+    sample_log: |
+      type=SYSCALL msg=audit(1794460802.412:88231): arch=c000003e syscall=313 success=yes exit=0 a0=3 a1=55d1c2f0a2b0 a2=0 a3=0 items=1 ppid=771180 pid=771203 auid=1042 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=pts1 ses=412 comm="insmod" exe="/usr/bin/kmod" key="kernel_modules"
+      type=PATH msg=audit(1794460802.412:88231): item=0 name="/tmp/.x/nvidia-peermem.ko" inode=1835071 dev=08:02 mode=0100644 ouid=1042 ogid=1042 rdev=00:00 nametype=NORMAL
+      Nov 12 05:20:02 dgx-h100-r04-n11 kernel: nvidia_peermem: module verification failed: signature and/or required key missing - tainting kernel
+
+  - id: GPU-004
+    name: MIG layout changed outside the automation pipeline
+    severity: Low
+    description: >-
+      Multi-Instance GPU partitions are an isolation boundary between tenants and teams. Hand-made MIG changes can
+      break isolation assumptions, strand capacity, or set up co-location with a victim workload.
+    log_sources:
+      - Linux auditd (execve of nvidia-smi)
+      - NVIDIA MIG Manager / GPU Operator logs
+      - Kubernetes audit logs (nvidia.com/mig.config label changes)
+    detection: >-
+      nvidia-smi mig -cgi, -dgi, -cci or -dci, or "nvidia-smi -mig 0|1", run by anyone other than the MIG manager
+      service account, or a change to the nvidia.com/mig.config node label outside a change window.
+    sample_log: |
+      type=EXECVE msg=audit(1794488712.031:91234): argc=7 a0="nvidia-smi" a1="mig" a2="-i" a3="2" a4="-cgi" a5="19,19,19,19,19,19,19" a6="-C"
+      type=SYSCALL msg=audit(1794488712.031:91234): arch=c000003e syscall=59 success=yes exit=0 ppid=90122 pid=90188 auid=1042 uid=0 gid=0 euid=0 tty=pts3 ses=97 comm="nvidia-smi" exe="/usr/bin/nvidia-smi" key="gpu_admin"
+
+  - id: GPU-005
+    name: GPU Operator ClusterPolicy or device plugin tampering
+    severity: High
+    description: >-
+      The GPU Operator ClusterPolicy controls the driver, device plugin, container toolkit and DCGM exporter on every
+      GPU node. Pointing an image at an untrusted registry, or switching off the DCGM exporter, compromises or blinds
+      the whole fleet at once.
+    log_sources:
+      - Kubernetes API server audit logs
+      - GitOps controller logs (Argo CD, Flux)
+    detection: >-
+      update or patch on clusterpolicies.nvidia.com, or on DaemonSets in the gpu-operator namespace, by any identity
+      other than the GitOps controller. Also alert on image repositories outside the approved registry list and on
+      dcgmExporter.enabled=false.
+    mappings: [T1562.001, T1525]
+    sample_log: |
+      {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"RequestResponse","auditID":"3c9a7e21-5d4b-4f8e-9a1b-2c3d4e5f6a7b","stage":"ResponseComplete","requestURI":"/apis/nvidia.com/v1/clusterpolicies/cluster-policy","verb":"patch","user":{"username":"oidc:d.ivanov@corp.example","groups":["oidc:platform-eng","system:authenticated"]},"sourceIPs":["10.20.44.207"],"userAgent":"kubectl/v1.31.2 (linux/amd64) kubernetes/5864a46","objectRef":{"resource":"clusterpolicies","name":"cluster-policy","apiGroup":"nvidia.com","apiVersion":"v1"},"responseStatus":{"code":200},"requestObject":{"spec":{"dcgmExporter":{"enabled":false},"devicePlugin":{"repository":"ghcr.io/gpu-tools-mirror","image":"k8s-device-plugin","version":"v0.17.0"}}},"requestReceivedTimestamp":"2026-11-12T13:02:44.120Z","stageTimestamp":"2026-11-12T13:02:44.198Z"}
+
+  - id: GPU-006
+    name: GPU telemetry gap (DCGM exporter or host engine down)
+    severity: Medium
+    description: >-
+      Mining, unscheduled jobs and thermal sabotage are all detected through GPU telemetry. A node whose DCGM exporter
+      or nv-hostengine goes quiet becomes a blind spot, whether from an outage or a deliberate act.
+    log_sources:
+      - Prometheus / Alertmanager
+      - systemd journal (nvidia-dcgm / nv-hostengine)
+    detection: >-
+      up{job="dcgm-exporter"} == 0 for more than 10 minutes on a node that is still running workloads, or
+      nv-hostengine stopped outside maintenance. Correlate with GPU-005 and with a recent privileged login on the node.
+    mappings: [T1562.006]
+    sample_log: |
+      {"receiver":"siem-webhook","status":"firing","alerts":[{"status":"firing","labels":{"alertname":"DCGMExporterDown","instance":"dgx-h100-r04-n11:9400","job":"dcgm-exporter","severity":"warning","cluster":"train-east-1"},"annotations":{"summary":"dcgm-exporter target down for 10m while node has 8 allocated GPUs"},"startsAt":"2026-11-12T13:03:15.000Z","generatorURL":"http://prometheus.mon.corp.example/graph?g0.expr=up%7Bjob%3D%22dcgm-exporter%22%7D%3D%3D0"}]}
+
+  - id: GPU-007
+    name: GPU compute process running outside any scheduler allocation
+    severity: Medium
+    description: >-
+      Every GPU process should belong to a Slurm job step or a Kubernetes pod. A process in a user session cgroup is
+      shadow usage: an insider skipping quotas, a leftover process, or an attacker's workload.
+    log_sources:
+      - Node agent (nvidia-smi --query-compute-apps plus /proc cgroup lookup)
+      - Slurm accounting / Kubernetes pod inventory
+    detection: >-
+      A GPU compute PID whose cgroup does not match /system.slice/slurmstepd.scope/job_* or a kubepods slice, held for
+      more than 10 minutes or more than 10 GiB of GPU memory.
+    mappings: [T1496.001]
+    sample_log: |
+      {"ts":"2026-11-12T13:41:09Z","host":"dgx-h100-r04-n11","collector":"gpu-proc-audit","gpu_uuid":"GPU-2a7c9e1f-6b3d-4c8e-9f1a-0b2c3d4e5f60","pid":1880412,"process_name":"/home/jsmith/.venv/bin/python","used_memory_mib":71234,"uid":1042,"user":"jsmith","cgroup":"0::/user.slice/user-1042.slice/session-88.scope","slurm_job_id":null,"k8s_pod":null,"expected_cgroup_prefix":"/system.slice/slurmstepd.scope/job_"}
+
+  - id: GPU-008
+    name: GPU performance-counter restriction disabled on shared nodes
+    severity: Low
+    description: >-
+      NVIDIA drivers restrict GPU profiling counters to admins (NVreg_RestrictProfilingToAdminUsers=1) because the
+      counters can leak information about co-tenant workloads. Turning the restriction off on shared nodes opens that
+      side channel.
+    log_sources:
+      - File integrity monitoring (Wazuh, OSSEC, Tripwire)
+      - Linux auditd (writes under /etc/modprobe.d)
+    detection: >-
+      Any change to /etc/modprobe.d/*nvidia* that sets NVreg_RestrictProfilingToAdminUsers=0, or ncu, nsys or cuda-gdb
+      run by non-admins on multi-tenant GPU nodes.
+    mappings: [T1562.001]
+    sample_log: |
+      {"timestamp":"2026-11-12T14:22:35.201+0000","rule":{"level":7,"description":"Integrity checksum changed.","id":"550","groups":["ossec","syscheck","syscheck_entry_modified","syscheck_file"]},"agent":{"id":"112","name":"dgx-h100-r04-n11"},"syscheck":{"path":"/etc/modprobe.d/nvidia.conf","event":"modified","diff":"1c1\n< options nvidia NVreg_RestrictProfilingToAdminUsers=1\n---\n> options nvidia NVreg_RestrictProfilingToAdminUsers=0","uname_after":"root","audit":{"user":{"name":"jsmith"},"process":{"name":"/usr/bin/vim.basic"}}}}
+
+  - id: GPU-009
+    name: GPU VBIOS or firmware version drift without a change ticket
+    severity: High
+    description: >-
+      GPU VBIOS, InfoROM and baseboard firmware should match the fleet baseline and change only through signed vendor
+      updates. Unexplained drift points to tampering, gray-market parts or an unauthorized flashing tool.
+    log_sources:
+      - Hardware inventory collector (nvidia-smi -q, DCGM, Redfish)
+      - Firmware update tool logs (nvfwupd)
+    detection: >-
+      VBIOS, InfoROM or GPU firmware version on any node differs from the approved baseline for that SKU, with no
+      matching maintenance ticket. Also alert on firmware tools run outside maintenance windows.
+    mappings: [T1542.002]
+    sample_log: |
+      2026-11-12T00:05:00Z inventory-collector host=dgx-h100-r04-n11 gpu=GPU-8f2c1a7e-5b3d-4e9f-a1c2-7d6e5f4a3b21 serial=1652023012345 field=vbios_version expected=96.00.99.00.01 observed=96.00.A1.00.07 driver=570.172.08 change_ticket=none
+
+  - id: GPU-010
+    name: GPU power or clock limits lowered outside policy
+    severity: Medium
+    description: >-
+      Lowering power limits or locking clocks on a training cluster quietly cuts throughput across a whole job. That
+      is a low-noise way to sabotage or slow a competitor's or tenant's work.
+    log_sources:
+      - NVIDIA DCGM Exporter metrics
+      - Linux auditd (execve of nvidia-smi)
+    detection: >-
+      DCGM_FI_DEV_POWER_MGMT_LIMIT or application clocks changed on production GPUs by anyone other than the
+      power-capping service, or a drop of more than 30% from the SKU default.
+    mappings: [AML.T0029]
+    sample_log: |
+      type=EXECVE msg=audit(1794496211.118:92011): argc=5 a0="nvidia-smi" a1="-i" a2="0,1,2,3,4,5,6,7" a3="-pl" a4="300"
+      DCGM_FI_DEV_POWER_MGMT_LIMIT{gpu="0",Hostname="dgx-h100-r04-n11",modelName="NVIDIA H100 80GB HBM3"} 300
+
+  - id: GPU-011
+    name: Container escape attempt through the NVIDIA Container Toolkit hook
+    severity: Critical
+    description: >-
+      CVE-2024-0132 and CVE-2025-23266 showed that a crafted container image can make the NVIDIA Container Toolkit hook,
+      which runs on the host, load attacker code and take over the GPU node. On shared clusters that means cross-tenant
+      access to models and data.
+    log_sources:
+      - Falco / runtime security events
+      - Kubernetes API server audit logs
+      - Node inventory (nvidia-container-toolkit version)
+    detection: >-
+      A host-side nvidia-ctk or nvidia-container-runtime-hook process opening a shared library from a container
+      rootfs path or /proc/self/cwd, or pods on GPU nodes that set LD_PRELOAD in their env. Also flag nodes running
+      a toolkit older than the fixed release (1.17.8 or later).
+    mappings: [T1611, T1068]
+    sample_log: |
+      {"time":"2026-11-12T15:41:27.882104511Z","rule":"GPU container hook loads library from container rootfs","priority":"Critical","source":"syscall","hostname":"dgx-h100-r04-n11","output":"Host hook process loaded library from container path (proc.name=nvidia-ctk proc.cmdline=nvidia-ctk hook update-ldcache fd.name=/proc/self/cwd/poc.so container.image=registry.example.net/research/finetune:latest k8s.ns=team-vision k8s.pod=finetune-7d9f-xk2pq)","output_fields":{"proc.name":"nvidia-ctk","fd.name":"/proc/self/cwd/poc.so","container.image.repository":"registry.example.net/research/finetune","k8s.ns.name":"team-vision","k8s.pod.name":"finetune-7d9f-xk2pq"},"tags":["custom","gpu","T1611"]}
+
+  - id: GPU-012
+    name: GPU confidential-computing attestation failure
+    severity: High
+    description: >-
+      Nodes that run confidential AI workloads in GPU CC mode must pass remote attestation of the driver and VBIOS
+      measurements before secrets or models are released to them. A failed or skipped attestation means the trust
+      chain is broken.
+    log_sources:
+      - NVIDIA Remote Attestation Service (NRAS) / local verifier logs
+      - Key broker / secret release logs
+    detection: >-
+      Any attestation result other than success for a GPU in CC mode, measurement comparison failures, or a key-broker
+      release to a node with no successful attestation in the last 24 hours.
+    mappings: [T1542.002]
+    sample_log: |
+      {"timestamp":"2026-11-12T16:02:11Z","node":"cc-h100-r09-n02","gpu_uuid":"GPU-41d0c2e7-8a1b-4c3d-9e5f-6a7b8c9d0e1f","cc_mode":"on","verifier":"NRAS","overall_result":false,"claims":{"x-nvidia-gpu-arch-check":true,"x-nvidia-gpu-attestation-report-signature-verified":true,"x-nvidia-gpu-driver-rim-measurements-available":true,"measres":"fail"},"workload":"tenant-orion/secure-infer","key_release":"denied"}

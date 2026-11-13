@@ -1,0 +1,169 @@
+category: Network Security
+code: NET
+layer: Identity & Perimeter
+scope: Next-generation firewalls, IDS/IPS, NDR, DNS, VPN, ZTNA, network flow monitoring
+usecases:
+
+  - id: NET-001
+    name: Internet-to-AI control plane session allowed by the firewall
+    severity: High
+    description: >-
+      Ray dashboards, Jupyter, MLflow, Triton, vLLM, the Kubernetes API and BMC interfaces are often exposed by
+      mistake. Exposed instances get scanned and exploited within hours, as the ShadowRay campaign showed.
+    log_sources:
+      - Next-generation firewall traffic logs (Palo Alto, Fortinet, Check Point)
+    detection: >-
+      Any allowed session from untrust or internet zones to the AI control-plane port list (6443, 8265, 10001, 8888,
+      5000, 8000-8002, 9400, 623/udp, or 443 on BMC ranges), or to hosts tagged ai-mgmt in the CMDB.
+    mappings: [T1190, T1133]
+    sample_log: |
+      <14>Nov 12 03:22:10 pa-edge-01 1,2026/11/12 03:22:10,013201001234,TRAFFIC,end,2817,2026/11/12 03:22:10,203.0.113.66,10.30.8.21,0.0.0.0,0.0.0.0,lab-temp-any,,,web-browsing,vsys1,untrust,ai-lab,ethernet1/1,ethernet1/7,Log-to-SIEM,2026/11/12 03:22:10,1849302,1,51022,8265,0,0,0x400019,tcp,allow,48211,2210,46001,61,2026/11/12 03:21:58,12,any,0,7302149,0x0,United States,10.0.0.0-10.255.255.255,0,32,29,tcp-fin
+
+  - id: NET-002
+    name: GPU node resolving or connecting to cryptomining pools
+    severity: High
+    description: >-
+      GPU nodes are prime mining targets. Stratum connections or pool lookups from training and inference subnets mean
+      hijacked compute, and usually an earlier compromise.
+    log_sources:
+      - DNS resolver query logs
+      - Zeek dns.log and conn.log
+      - NGFW threat logs
+    detection: >-
+      DNS queries from GPU subnets that match mining-pool threat intel or patterns (*pool*, *2miners*, *nanopool*,
+      *herominers*), or TCP sessions to common Stratum ports (3333, 4444, 5555, 7777, 14444), or payloads containing
+      "mining.subscribe".
+    mappings: [T1496.001, T1071]
+    sample_log: |
+      {"ts":1794457297.118,"uid":"CHhAvVGS1DHFjwGM9","id.orig_h":"10.50.7.13","id.orig_p":40112,"id.resp_h":"10.10.0.53","id.resp_p":53,"proto":"udp","trans_id":31842,"query":"etc.2miners.com","qclass_name":"C_INTERNET","qtype_name":"A","rcode_name":"NOERROR","AA":false,"RD":true,"RA":true,"answers":["198.51.100.140"],"TTLs":[300.0],"rejected":false}
+
+  - id: NET-003
+    name: DNS tunneling from training or storage subnets
+    severity: High
+    description: >-
+      Long, high-entropy subdomains and bursts of TXT or NULL queries to one domain are a quiet way to move tokens,
+      configs or small model artifacts past egress controls.
+    log_sources:
+      - DNS server query logs (BIND, Infoblox, Windows DNS analytical)
+      - Zeek dns.log
+    detection: >-
+      For one registered domain, more than 200 unique subdomains per hour from a single host, an average label length
+      above 40 characters with high Shannon entropy, or a TXT/NULL share above 50% of queries.
+    mappings: [T1071.004, T1048.003]
+    sample_log: |
+      12-Nov-2026 04:22:31.512 queries: info: client @0x7f9b1c0a2b40 10.60.2.41#53122 (mzxw6ytboi2dqnbsgezdgmjr.gq3tsnzrgm2dkmrz.x7.cdn-sync.example.net): query: mzxw6ytboi2dqnbsgezdgmjr.gq3tsnzrgm2dkmrz.x7.cdn-sync.example.net IN TXT +E(0)K (10.10.0.53)
+
+  - id: NET-004
+    name: Large outbound transfer from GPU or storage networks
+    severity: Critical
+    description: >-
+      Model weights, checkpoints and curated datasets run to hundreds of gigabytes. Sustained egress from training,
+      storage or checkpoint subnets to an unknown destination is the clearest network sign of IP theft.
+    log_sources:
+      - NetFlow / IPFIX (nfdump, ElastiFlow)
+      - NGFW traffic logs
+      - Cloud VPC flow logs
+    detection: >-
+      More than 20 GB in 1 hour from GPU, storage or checkpoint VLANs to destinations outside the egress allow-list,
+      or a first-seen destination receiving more than 5 GB. Suppress approved replication and backup targets.
+    mappings: [T1048, T1030, AML.T0025]
+    sample_log: |
+      Date first seen          Duration Proto      Src IP Addr:Port          Dst IP Addr:Port   Flags Tos  Packets    Bytes Flows
+      2026-11-12 05:01:13.221  3599.870 TCP      10.60.2.41:44012  ->   198.51.100.200:443   .AP.SF   0   71.2 M   98.1 G     1
+
+  - id: NET-005
+    name: VPN session from impossible travel or a first-seen country
+    severity: Medium
+    description: >-
+      Remote access into the data-center network from two distant places in a short time, or from a country the user
+      has never connected from, points to a stolen VPN credential or session.
+    log_sources:
+      - VPN concentrator logs (Cisco ASA/FTD, GlobalProtect, FortiGate, Ivanti)
+    detection: >-
+      The same user with VPN sessions from two geolocations implying travel faster than 900 km/h, a country not seen
+      in the last 90 days, or more than 2 concurrent sessions from different public IPs.
+    mappings: [T1133, T1078]
+    sample_log: |
+      Nov 12 2026 06:40:02 asa-vpn-01 : %ASA-6-113039: Group <GP-Research> User <j.doe> IP <203.0.113.9> AnyConnect parent session started.
+      Nov 12 2026 06:40:03 asa-vpn-01 : %ASA-4-722051: Group <GP-Research> User <j.doe> IP <203.0.113.9> IPv4 Address <10.250.8.44> IPv6 address <::> assigned to session
+
+  - id: NET-006
+    name: ZTNA access denied across several sensitive apps
+    severity: Medium
+    description: >-
+      Repeated policy or device-posture denials across BMC consoles, Kubernetes dashboards and scheduler portals show
+      someone probing what a stolen identity or an unmanaged device can reach.
+    log_sources:
+      - ZTNA access logs (Zscaler ZPA, Cloudflare Access, Netskope Private Access)
+    detection: >-
+      10 or more denials for one user across 3 or more apps tagged gpu-admin within 15 minutes, or any access attempt
+      to those apps from a device that fails posture checks.
+    mappings: [T1133, T1078]
+    sample_log: |
+      {"CreatedAt":"2026-11-12T07:12:55Z","Action":"login","Allowed":false,"AppDomain":"bmc-console.ai.corp.example","AppUUID":"4f2b8c1d-9a3e-4b7f-8c2d-1e0f9a8b7c6d","Country":"de","Email":"s.okafor@corp.example","IPAddress":"198.51.100.77","RayID":"8e1f2a3b4c5d6e7f","UserUID":"a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d","Connection":"saml","DenyReason":"device_posture_failed"}
+
+  - id: NET-007
+    name: East-west scanning or SSH fan-out from a GPU node
+    severity: High
+    description: >-
+      A compromised training node that starts touching dozens of peers over SSH, SMB, WinRM, the Kubernetes API or the
+      kubelet is moving laterally across a flat, high-trust cluster network.
+    log_sources:
+      - Zeek conn.log / NDR
+      - Cilium Hubble or VPC flow logs
+      - NGFW east-west traffic logs
+    detection: >-
+      One source connecting to 25 or more distinct internal hosts on 22, 445, 5985, 6443 or 10250 within 10 minutes,
+      or to 100 or more distinct ports on one host. Exclude config-management controllers and vulnerability scanners.
+    mappings: [T1046, T1021.004]
+    sample_log: |
+      {"ts":1794459912.441,"uid":"C8Kq1v3ZpXo2mN7a1b","id.orig_h":"10.50.7.13","id.orig_p":51544,"id.resp_h":"10.50.7.88","id.resp_p":22,"proto":"tcp","service":"ssh","duration":0.42,"orig_bytes":1342,"resp_bytes":2111,"conn_state":"SF","local_orig":true,"local_resp":true,"history":"ShADadFf","orig_pkts":14,"resp_pkts":12}
+
+  - id: NET-008
+    name: Periodic beaconing to a rare external domain
+    severity: High
+    description: >-
+      Implants on GPU nodes and jump hosts call home on a near-fixed interval. Low jitter to a domain no other host
+      talks to is a strong command-and-control signal, even over TLS.
+    log_sources:
+      - Zeek ssl.log / conn.log
+      - Web proxy logs
+      - NDR (Vectra, ExtraHop, Corelight)
+    detection: >-
+      One internal host making 50 or more connections in 24 hours to a destination seen by 3 or fewer internal hosts,
+      with an inter-arrival coefficient of variation below 0.2 and similar payload sizes.
+    mappings: [T1071.001, T1573]
+    sample_log: |
+      {"ts":1794461821.203,"uid":"CsY4hq2W1x9pN8a3c","id.orig_h":"10.50.7.13","id.orig_p":49822,"id.resp_h":"192.0.2.150","id.resp_p":443,"version":"TLSv13","cipher":"TLS_AES_128_GCM_SHA256","server_name":"telemetry-cdn.example.org","resumed":false,"established":true,"ja3":"a1f3c9e27b4d58e0c6d2f19b3e7a8c41","ja3s":"5c2e8b91d04f7a36e1b9c58d2f6a0e47","beacon":{"interval_s":60,"cv":0.06,"count_24h":1438,"internal_peers":1}}
+
+  - id: NET-009
+    name: Firewall rule opened to any-any into GPU or management zones
+    severity: High
+    description: >-
+      Temporary "allow any" rules into BMC, fabric-management or Kubernetes control-plane zones tend to stay, and
+      they are a common way attackers widen access once they hold firewall admin rights.
+    log_sources:
+      - NGFW configuration / audit logs (Palo Alto CONFIG, FortiGate event logs)
+      - Firewall manager change logs (Panorama, FortiManager)
+    detection: >-
+      A security rule created or edited where source, destination or application is "any" and the destination zone is
+      bmc, fabric-mgmt, k8s-control or gpu-prod, or any rule commit outside the approved change window.
+    mappings: [T1562.004]
+    sample_log: |
+      <14>Nov 12 22:15:44 pa-core-01 1,2026/11/12 22:15:44,013201001234,CONFIG,0,2049,2026/11/12 22:15:44,10.20.9.14,vsys1,set,netadmin02,Web,Succeeded, vsys  vsys1 rulebase security rules  temp-allow-any,7302150,0x0,0,0,0,0,,pa-core-01
+
+  - id: NET-010
+    name: DNS-over-HTTPS or Tor egress from data-center hosts
+    severity: Medium
+    description: >-
+      Servers that bypass the corporate resolver with DoH, or reach Tor, blind DNS-based detections. They are often
+      running malware or tooling that wants to hide its infrastructure.
+    log_sources:
+      - NGFW traffic / App-ID logs
+      - Web proxy logs
+    detection: >-
+      App-ID dns-over-https, tor or tor2web from server subnets, or HTTPS to well-known public DoH endpoints
+      (1.1.1.1, 8.8.8.8, 9.9.9.9 on 443) from GPU, storage or management networks.
+    mappings: [T1572, T1090.003]
+    sample_log: |
+      <14>Nov 12 08:31:02 pa-edge-01 1,2026/11/12 08:31:02,013201001234,TRAFFIC,end,2817,2026/11/12 08:31:02,10.50.7.13,1.1.1.1,203.0.113.10,1.1.1.1,dc-egress-default,,,dns-over-https,vsys1,gpu-prod,untrust,ethernet1/5,ethernet1/1,Log-to-SIEM,2026/11/12 08:31:02,1851120,1,40332,443,51233,443,0x400053,tcp,allow,28812,6211,22601,96,2026/11/12 08:28:40,142,any,0,7302411,0x0,10.0.0.0-10.255.255.255,Australia,0,48,48,tcp-fin

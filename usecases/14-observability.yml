@@ -1,0 +1,136 @@
+category: Observability
+code: OBS
+layer: Data & Operations
+scope: OpenTelemetry, Prometheus, Grafana, Loki, Jaeger, platform logs and traces
+usecases:
+
+  - id: OBS-001
+    name: Critical log source goes silent
+    severity: High
+    description: >-
+      Attackers turn off what watches them. A Kubernetes audit stream, BMC syslog feed or GPU-node log shipper going
+      quiet is often the first sign, and every detection that depends on it is blind until it is fixed.
+    log_sources:
+      - SIEM ingestion health metrics
+      - Log pipeline metrics (OpenTelemetry Collector, Fluent Bit, Vector)
+    detection: >-
+      No events for more than 15 minutes (or under 10% of expected EPS) from sources marked critical, such as k8s
+      audit, IdP, firewall, BMC syslog and GPU nodes. Page if the gap starts within an hour of a privileged login.
+    mappings: [T1562.006]
+    sample_log: |
+      {"ts":"2026-11-12T23:10:00Z","check":"log-source-heartbeat","source":"k8s-audit","cluster":"train-east-1","last_event":"2026-11-12T22:23:11Z","minutes_silent":47,"expected_eps":350,"observed_eps":0,"owner":"platform-eng"}
+
+  - id: OBS-002
+    name: Linux audit or Kubernetes audit logging disabled
+    severity: High
+    description: >-
+      Running "auditctl -e 0", stopping auditd, or setting the API server audit policy to level None removes the
+      evidence for most host and cluster detections in this library.
+    log_sources:
+      - Linux auditd (CONFIG_CHANGE records)
+      - systemd journal
+      - kube-apiserver configuration / audit policy changes
+    detection: >-
+      CONFIG_CHANGE with audit_enabled=0, auditd stopped or rules flushed (auditctl -D), or changes to the API server
+      audit policy file or flags, outside an approved change.
+    mappings: [T1562.012]
+    sample_log: |
+      type=CONFIG_CHANGE msg=audit(1794521411.512:1201): op=set audit_enabled=0 old=1 auid=1042 ses=88 subj=unconfined res=1
+      Nov 12 23:10:11 dgx-h100-r04-n11 systemd[1]: Stopping auditd.service - Security Auditing Service...
+
+  - id: OBS-003
+    name: Grafana exploitation or new admin token
+    severity: High
+    description: >-
+      Grafana instances that chart GPU fleets are often internet-exposed and hold data-source credentials for
+      Prometheus, Loki and cloud accounts. Path-traversal hits and new service-account tokens deserve attention.
+    log_sources:
+      - Grafana server logs
+      - Reverse proxy access logs
+    detection: >-
+      200 responses on /public/plugins/*/../ paths, new service accounts or API tokens with Admin role, or admin
+      actions from sources outside SSO.
+    mappings: [T1190, T1098.001]
+    sample_log: |
+      logger=context userId=0 orgId=0 uname= t=2026-11-12T17:12:44.118Z level=info msg="Request Completed" method=GET path=/public/plugins/alertlist/../../../../../../../../etc/passwd status=200 remote_addr=203.0.113.88 time_ms=2 duration=2.104ms size=1894 referer= handler=/public/plugins/:pluginId/*
+      logger=serviceaccounts t=2026-11-12T17:20:02.551Z level=info msg="Created service account token" orgId=1 serviceAccountId=14 role=Admin uname=admin remote_addr=203.0.113.88
+
+  - id: OBS-004
+    name: Prometheus admin API used to delete metrics
+    severity: High
+    description: >-
+      With the admin API enabled, delete_series and clean_tombstones permanently erase metrics such as DCGM GPU
+      utilization, which is exactly the evidence of mining or unscheduled jobs.
+    log_sources:
+      - Prometheus / Thanos reverse proxy access logs
+    detection: >-
+      Any request to /api/v1/admin/tsdb/delete_series, clean_tombstones or snapshot from hosts other than the
+      monitoring automation, especially matching dcgm or security-related jobs.
+    mappings: [T1070]
+    sample_log: |
+      10.20.44.118 - - [12/Nov/2026:23:31:02 +0000] "POST /api/v1/admin/tsdb/delete_series?match[]={job=%22dcgm-exporter%22}&start=2026-11-12T00:00:00Z HTTP/1.1" 204 0 "-" "curl/8.5.0" host="prometheus.mon.corp.example"
+      10.20.44.118 - - [12/Nov/2026:23:31:09 +0000] "POST /api/v1/admin/tsdb/clean_tombstones HTTP/1.1" 204 0 "-" "curl/8.5.0" host="prometheus.mon.corp.example"
+
+  - id: OBS-005
+    name: Credentials written into application logs
+    severity: Medium
+    description: >-
+      Debug logging in LLM routers, SDKs and pipelines often prints Authorization headers, NGC or Hugging Face tokens
+      and cloud keys. Anyone with log access can then reuse them.
+    log_sources:
+      - Loki / Elasticsearch / Splunk application logs
+      - Log pipeline secret-scanning processors
+    detection: >-
+      Log lines that match credential patterns (nvapi-, hf_, AKIA, ASIA, xoxb-, Bearer eyJ, -----BEGIN), grouped by
+      service. Rotate the exposed secret and mask it at the collector.
+    mappings: [T1552.001]
+    sample_log: |
+      {"stream":{"namespace":"inference-prod","pod":"llm-router-5c7d9-qx2lp","container":"router"},"values":[["1794523971118000000","2026-11-12T22:52:51.118Z DEBUG outbound request headers={'Authorization': 'Bearer nvapi-Jk3L9xQ2********(masked by pipeline)', 'x-request-id': 'b6f0c3e2'}"]]}
+
+  - id: OBS-006
+    name: Telemetry pipeline reconfigured to export off-site
+    severity: High
+    description: >-
+      OpenTelemetry Collector configs decide where logs, traces and prompts go. A new exporter pointed at an unknown
+      endpoint quietly copies everything, including prompts and responses captured in GenAI spans.
+    log_sources:
+      - Kubernetes API server audit logs (ConfigMap / CRD changes)
+      - Collector egress flow logs
+    detection: >-
+      Changes to collector ConfigMaps or OpenTelemetryCollector CRs that add exporters to endpoints outside the
+      approved observability backends, or collector egress to new destinations.
+    mappings: [T1020]
+    sample_log: |
+      {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"RequestResponse","auditID":"a0b1c2d3-e4f5-4a6b-8c7d-9e0f1a2b3c4e","stage":"ResponseComplete","requestURI":"/api/v1/namespaces/observability/configmaps/otel-gateway-config","verb":"patch","user":{"username":"oidc:jsmith@corp.example","groups":["oidc:researchers","system:authenticated"]},"sourceIPs":["10.20.44.118"],"userAgent":"kubectl/v1.31.2 (linux/amd64) kubernetes/5864a46","objectRef":{"resource":"configmaps","namespace":"observability","name":"otel-gateway-config","apiVersion":"v1"},"responseStatus":{"code":200},"requestObject":{"data":{"relay":"exporters:\n  otlphttp/backup:\n    endpoint: https://collector.telemetry-sync.example.net\nservice:\n  pipelines:\n    traces:\n      exporters: [otlp/tempo, otlphttp/backup]\n"}},"requestReceivedTimestamp":"2026-11-12T23:35:40.118Z","stageTimestamp":"2026-11-12T23:35:40.151Z"}
+
+  - id: OBS-007
+    name: Prompts and PII captured in production traces
+    severity: Low
+    description: >-
+      GenAI instrumentation can record full prompts and completions as span attributes. In production that puts
+      customer PII and secrets in a tracing backend with much weaker access control than the app.
+    log_sources:
+      - Trace backends (Jaeger, Tempo, Elastic APM)
+      - OpenTelemetry GenAI spans
+    detection: >-
+      Production spans with gen_ai.input.messages or gen_ai.output.messages populated, or span attributes that match
+      PII or credential detectors, outside an approved debugging window.
+    mappings: ["LLM02:2025"]
+    sample_log: |
+      {"traceId":"5b8efff798038103d269b633813fc60c","spanId":"eee19b7ec3c1b174","name":"chat llama-3.1-70b-instruct","startTime":"2026-11-12T23:40:12.551Z","attributes":{"gen_ai.operation.name":"chat","gen_ai.request.model":"llama-3.1-70b-instruct","gen_ai.input.messages":"[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"My card 4111 1111 1111 1111 was charged twice, email me at maria.lopez@example.com\"}]}]","gen_ai.usage.input_tokens":412,"deployment.environment":"prod"}}
+
+  - id: OBS-008
+    name: Broad Alertmanager silence covering security alerts
+    severity: High
+    description: >-
+      A week-long silence with a regex matcher like alertname=~".*" mutes Falco, DCGM and audit alerts along with the
+      noisy ones. It is a quiet way to blind the SOC.
+    log_sources:
+      - Alertmanager API / silences
+      - Reverse proxy access logs
+    detection: >-
+      Silences whose matchers are regex wildcards, cover security-labeled alerts (team=security, source=falco), or last
+      more than 24 hours, especially when created by non-SRE users.
+    mappings: [T1562.001]
+    sample_log: |
+      {"id":"d2f4c1a7-9b3e-4c8d-a1f0-6e5b4c3d2a10","status":{"state":"active"},"updatedAt":"2026-11-12T23:44:02.118Z","comment":"noisy during maintenance","createdBy":"jsmith","startsAt":"2026-11-12T23:44:02.118Z","endsAt":"2026-11-19T23:44:02.118Z","matchers":[{"name":"alertname","value":".*","isRegex":true,"isEqual":true}]}

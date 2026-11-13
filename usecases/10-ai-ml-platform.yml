@@ -1,0 +1,177 @@
+category: AI/ML Platform
+code: MLP
+layer: AI Stack
+scope: NVIDIA NIM, Triton Inference Server, vLLM, SGLang, MLflow, Kubeflow, Jupyter, model registries
+usecases:
+
+  - id: MLP-001
+    name: Unsafe pickle payload found in a downloaded model
+    severity: Critical
+    description: >-
+      PyTorch .bin/.pt and other pickle-based model files can run code as soon as they are loaded. Models pulled from
+      public hubs into training or serving environments should be scanned, and safetensors preferred.
+    log_sources:
+      - Model scanner results (ModelScan, picklescan, Protect AI Guardian)
+      - Model registry / download proxy logs
+    detection: >-
+      Any scanner finding of severity HIGH or CRITICAL (os/posix.system, subprocess, builtins.exec or eval, runpy),
+      or a pickle-format model loaded in production with no scan record.
+    mappings: [AML.T0011.000, AML.T0010.003, "LLM03:2025"]
+    sample_log: |
+      {"summary":{"total_issues":1,"total_issues_by_severity":{"LOW":0,"MEDIUM":0,"HIGH":0,"CRITICAL":1},"input_path":"/scan/hf-cache/models--acme-research--llama-ft-7b/pytorch_model.bin","modelscan_version":"0.8.1","timestamp":"2026-11-12T11:41:55.209Z","scanned":{"total_scanned":1,"scanned_files":["pytorch_model.bin:llama-ft-7b/data.pkl"]}},"issues":[{"description":"Use of unsafe operator 'system' from module 'posix'","operator":"system","module":"posix","source":"pytorch_model.bin:llama-ft-7b/data.pkl","scanner":"modelscan.scanners.PickleUnsafeOpScan","severity":"CRITICAL"}],"errors":[]}
+
+  - id: MLP-002
+    name: Bulk model artifact download from MLflow or the model registry
+    severity: High
+    description: >-
+      Fine-tuned weights and checkpoints are often the most valuable IP in the building. Pulling many large artifacts,
+      or artifacts outside the user's projects, looks like model theft.
+    log_sources:
+      - MLflow tracking server / artifact proxy access logs
+      - Model registry audit logs
+    detection: >-
+      More than 50 GB or more than 20 model artifacts downloaded by one identity in 1 hour, or downloads from
+      experiments the user does not own, especially followed by egress (NET-004).
+    mappings: [AML.T0035, AML.T0048.004, T1213]
+    sample_log: |
+      10.20.44.201 - jsmith [12/Nov/2026:12:01:22 +0000] "GET /api/2.0/mlflow-artifacts/artifacts/12/8f2c1a7e5b3d4e9fa1c27d6e5f4a3b21/artifacts/model/model-00001-of-00004.safetensors HTTP/1.1" 200 4991040512 "-" "python-requests/2.32.3"
+      10.20.44.201 - jsmith [12/Nov/2026:12:03:09 +0000] "GET /api/2.0/mlflow-artifacts/artifacts/12/8f2c1a7e5b3d4e9fa1c27d6e5f4a3b21/artifacts/model/model-00002-of-00004.safetensors HTTP/1.1" 200 4991040512 "-" "python-requests/2.32.3"
+
+  - id: MLP-003
+    name: Model promoted to production outside the release process
+    severity: High
+    description: >-
+      Moving a "champion" alias or Production stage to a model version trained from a personal experiment is the
+      simplest way to ship a backdoored or poisoned model to users.
+    log_sources:
+      - MLflow model registry API logs
+      - Model registry audit events
+    detection: >-
+      Alias set or stage transition to Production or champion by users outside release managers, or where the source
+      run belongs to a scratch or personal experiment, or with no linked evaluation and approval record.
+    mappings: [AML.T0018, T1565.001]
+    sample_log: |
+      10.20.44.118 - jsmith [12/Nov/2026:12:30:44 +0000] "POST /api/2.0/mlflow/registered-models/alias HTTP/1.1" 200 2 "-" "mlflow-python-client/2.17.2"
+      {"ts":"2026-11-12T12:30:44Z","event":"registered_model_alias_set","model":"fraud-llm","alias":"champion","version":"14","previous_version":"12","user":"jsmith","source_run_id":"9b1f2c3d4e5f60718293a4b5c6d7e8f9","run_experiment":"scratch-jsmith","approval_record":null}
+
+  - id: MLP-004
+    name: Triton model control or shared-memory API called by an unexpected client
+    severity: Critical
+    description: >-
+      Triton's repository API loads and unloads models at runtime, and its shared-memory API was part of a 2025 RCE
+      chain (CVE-2025-23319/23320/23334). Only the deployment system should call these endpoints.
+    log_sources:
+      - Triton Inference Server logs
+      - Ingress / service mesh access logs
+    detection: >-
+      POST /v2/repository/models/*/load|unload, or /v2/*sharedmemory/region/*/register, from clients other than the
+      CD system, any shared-memory register naming an internal region (triton_python_backend_shm_region_*), or
+      Triton versions older than the fixed release.
+    mappings: [T1190, AML.T0018]
+    sample_log: |
+      I1112 12:44:03.118021 1 http_server.cc:4615] "HTTP request: 2 /v2/repository/models/llm-ensemble/load"
+      I1112 12:44:03.120882 1 model_lifecycle.cc:473] "loading: llm-ensemble:1"
+      I1112 12:44:05.774210 1 model_lifecycle.cc:849] "successfully loaded 'llm-ensemble'"
+      I1112 12:44:09.002113 1 http_server.cc:4615] "HTTP request: 2 /v2/systemsharedmemory/region/triton_python_backend_shm_region_4f50c226-b3d0-46e8-ac59-d4690b28b859/register"
+
+  - id: MLP-005
+    name: Model server started with remote code from an unvetted repo
+    severity: High
+    description: >-
+      vLLM and SGLang can run arbitrary Python shipped with a model (trust_remote_code). Serving an unvetted Hub repo
+      that way, on 0.0.0.0 with no API key, combines a supply-chain risk with an unauthenticated endpoint.
+    log_sources:
+      - vLLM / SGLang server startup logs
+      - Kubernetes API server audit logs (container args)
+    detection: >-
+      trust_remote_code=True where the model is not from the internal mirror or registry, api_key None while bound to
+      0.0.0.0, or server versions with known RCE advisories.
+    mappings: [AML.T0010.003, "LLM03:2025", T1190]
+    sample_log: |
+      INFO 11-12 13:02:11 [api_server.py:1885] vLLM API server version 0.11.0
+      INFO 11-12 13:02:11 [utils.py:328] non-default args: {'model': 'someuser-hf/qwen-ft-unknown', 'trust_remote_code': True, 'host': '0.0.0.0', 'port': 8000, 'api_key': None, 'tensor_parallel_size': 8}
+
+  - id: MLP-006
+    name: Served model weights no longer match the signed manifest
+    severity: Critical
+    description: >-
+      If weight files in the NIM, Triton or vLLM model cache stop matching the hashes in the signed model manifest,
+      someone modified the model at rest. That could be a backdoor, a swapped checkpoint or plain corruption.
+    log_sources:
+      - Model integrity checker (OpenSSF model-signing / Sigstore verification)
+      - File integrity monitoring on model caches and PVCs
+    detection: >-
+      Any SHA-256 mismatch between served model files and the signed manifest, an invalid manifest signature, or write
+      events on model cache volumes by processes other than the model puller.
+    mappings: [AML.T0018, T1565.001]
+    sample_log: |
+      {"ts":"2026-11-12T13:30:00Z","checker":"model-integrity-cron","cluster":"inference-east","pod":"nim-llama-70b-6c9f8-2xk7q","path":"/opt/nim/.cache/ngc/hub/models--nim--meta--llama-3_1-70b-instruct/blobs/model-00003-of-00030.safetensors","expected_sha256":"9f2c1d0e8b7a6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d","observed_sha256":"0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c","manifest":"model_signing bundle (sigstore)","signature_valid":true,"result":"MISMATCH"}
+
+  - id: MLP-007
+    name: Jupyter server with authentication disabled, or a terminal opened from outside
+    severity: High
+    description: >-
+      Notebook servers on GPU nodes run with the user's credentials and mounted datasets. One started with no token,
+      or a terminal opened from an unknown network, gives remote code execution in the data plane.
+    log_sources:
+      - Jupyter Server / JupyterHub logs
+      - Kubeflow Notebooks controller logs
+    detection: >-
+      The "All authentication is disabled" warning, servers bound to 0.0.0.0 with an empty token, or POST
+      /api/terminals and kernel shell commands from IPs outside VPN or ZTNA ranges.
+    mappings: [T1190, T1059.006]
+    sample_log: |
+      [W 2026-11-12 13:44:02.118 ServerApp] All authentication is disabled.  Anyone who can connect to this server will be able to run code.
+      [I 2026-11-12 13:44:02.120 ServerApp] Jupyter Server 2.14.2 is running at: http://0.0.0.0:8888/lab
+      [I 2026-11-12 13:51:40.551 ServerApp] New terminal with automatic name: 1
+      [I 2026-11-12 13:51:40.552 ServerApp] 201 POST /api/terminals (203.0.113.66) 4.12ms
+
+  - id: MLP-008
+    name: User grants themselves access to another team's Kubeflow profile
+    severity: Medium
+    description: >-
+      Kubeflow profiles isolate teams' notebooks, pipelines and data credentials. A contributor binding added to
+      another team's namespace breaks multi-team isolation on a shared GPU platform.
+    log_sources:
+      - Kubernetes API server audit logs
+      - Kubeflow Access Management (KFAM) logs
+    detection: >-
+      RoleBinding creation in a profile namespace (annotations role and user) where the subject is not a member of
+      that team's IdP group, or where the subject granted the access to themselves.
+    mappings: [T1098.006]
+    sample_log: |
+      {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"RequestResponse","auditID":"8e9f0a1b-2c3d-4e4f-9a5b-6c7d8e9f0a1b","stage":"ResponseComplete","requestURI":"/apis/rbac.authorization.k8s.io/v1/namespaces/team-finance-ml/rolebindings","verb":"create","user":{"username":"jsmith@corp.example","groups":["system:authenticated"]},"sourceIPs":["10.20.44.118"],"userAgent":"kubectl/v1.31.2 (linux/amd64) kubernetes/5864a46","objectRef":{"resource":"rolebindings","namespace":"team-finance-ml","name":"user-jsmith-corp-example-clusterrole-edit","apiGroup":"rbac.authorization.k8s.io","apiVersion":"v1"},"responseStatus":{"code":201},"requestObject":{"metadata":{"annotations":{"role":"edit","user":"jsmith@corp.example"}},"roleRef":{"kind":"ClusterRole","name":"kubeflow-edit","apiGroup":"rbac.authorization.k8s.io"},"subjects":[{"kind":"User","name":"jsmith@corp.example","apiGroup":"rbac.authorization.k8s.io"}]},"requestReceivedTimestamp":"2026-11-12T14:10:03.004Z","stageTimestamp":"2026-11-12T14:10:03.040Z"}
+
+  - id: MLP-009
+    name: Curated training dataset changed outside the data pipeline
+    severity: High
+    description: >-
+      Fine-tuning and evaluation sets are small enough that a few thousand edited labels or injected samples can plant
+      a backdoor. Commits to curated datasets should come only from the reviewed data pipeline.
+    log_sources:
+      - Data versioning audit logs (lakeFS, DVC, Delta Lake history)
+      - Object storage data events
+    detection: >-
+      Commits or object writes to curated or gold dataset branches by human identities or unknown clients, or label
+      distribution shifts beyond a threshold between versions.
+    mappings: [AML.T0020, "LLM04:2025"]
+    sample_log: |
+      {"time":"2026-11-12T14:52:19Z","level":"info","msg":"HTTP call ended","method":"POST","path":"/api/v1/repositories/curated-sft/branches/main/commits","status_code":201,"took":"412.1ms","user":"jsmith","client":"lakectl/1.38.0","source_ip":"10.20.44.118","request_id":"3b2c1d0e-9f8a-4b7c-8d6e-5f4a3b2c1d0e","commit":{"id":"a7c9e1f3b5d7","message":"fix labels","changed_objects":18412}}
+
+  - id: MLP-010
+    name: Inference server crash loop triggered by crafted requests
+    severity: Medium
+    description: >-
+      Malformed multimodal inputs, extreme parameters or known parser bugs can crash GPU model servers. Repeated
+      crashes tied to one client are a denial-of-service attempt against the AI service.
+    log_sources:
+      - vLLM / Triton / SGLang server logs
+      - Kubernetes events (BackOff, OOMKilled)
+    detection: >-
+      3 or more restarts of an inference pod in 10 minutes with CUDA errors or OOMKilled, where the last requests
+      before each crash share a client, API key or payload pattern.
+    mappings: [AML.T0029, T1499.004]
+    sample_log: |
+      ERROR 11-12 14:02:11 [core.py:710] EngineCore encountered a fatal error.
+      ERROR 11-12 14:02:11 [core.py:710] RuntimeError: CUDA error: an illegal memory access was encountered
+      {"kind":"Event","type":"Warning","reason":"BackOff","message":"Back-off restarting failed container vllm in pod vllm-llama-70b-0_inference-prod(0f1e2d3c-4b5a-4968-8778-695a4b3c2d1e)","count":6,"lastTimestamp":"2026-11-12T14:09:40Z"}

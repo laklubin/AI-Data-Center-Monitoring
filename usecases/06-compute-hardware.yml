@@ -1,0 +1,175 @@
+category: Compute / Hardware
+code: CMP
+layer: GPU & Physical Infrastructure
+scope: Bare-metal servers, virtual machines, hypervisors, Linux, BMC, Redfish / IPMI, secure boot
+usecases:
+
+  - id: CMP-001
+    name: BMC login with a default account or from outside the OOB jump hosts
+    severity: High
+    description: >-
+      The BMC (iDRAC, iLO, XClarity, DGX BMC) gives power control, a virtual console, virtual media and firmware
+      update on GPU servers. Logins with root, ADMIN or admin, or from anywhere other than the out-of-band jump hosts,
+      put the whole server at risk.
+    log_sources:
+      - BMC syslog / Lifecycle Controller logs
+      - Redfish SessionService events
+    detection: >-
+      Successful BMC logins (for example iDRAC USR0030) whose source IP is outside the OOB management/jump-host range,
+      any use of factory default accounts, or 5 or more failed logins (USR0031) from one source in 10 minutes.
+    mappings: [T1078.001, T1133]
+    sample_log: |
+      <46>Nov 12 01:44:10 idrac-xe9680-r11-n04 Severity: Informational, Category: Audit, MessageID: USR0030, Message: Successfully logged in using root, from 10.20.31.144 and REDFISH.
+
+  - id: CMP-002
+    name: BMC or BIOS firmware update outside a maintenance window
+    severity: High
+    description: >-
+      Malicious or downgraded BMC/UEFI firmware survives reimaging and gives persistent, OS-invisible control of GPU
+      servers. Every firmware update should match an approved change and a signed image hash.
+    log_sources:
+      - Redfish event subscriptions (UpdateService)
+      - BMC Lifecycle / SEL logs
+    detection: >-
+      Redfish Update.* messages (UpdateInProgress, InstallingOnComponent, UpdateSuccessful) outside an approved window,
+      from an operator not in the firmware team, or for an image whose hash or version is not in the approved catalog,
+      including downgrades.
+    mappings: [T1542.001, T1542.002]
+    sample_log: |
+      {"@odata.type":"#Event.v1_7_0.Event","Id":"1132","Name":"Event Array","Context":"siem-subscription","Events":[{"EventType":"Alert","EventId":"1132","Severity":"OK","MessageId":"Update.1.0.InstallingOnComponent","Message":"Image 'bmc-fw-25.06.2' is being installed on 'BMC'.","MessageArgs":["bmc-fw-25.06.2","BMC"],"OriginOfCondition":{"@odata.id":"/redfish/v1/UpdateService"},"EventTimestamp":"2026-11-12T02:11:58+00:00"}]}
+
+  - id: CMP-003
+    name: Secure Boot disabled or measured-boot attestation failure
+    severity: High
+    description: >-
+      GPU nodes that boot with Secure Boot off, or whose TPM PCR quotes stop matching the golden values, may be running
+      a bootkit or an unapproved kernel underneath every training job.
+    log_sources:
+      - Linux kernel boot log
+      - Keylime / TPM remote attestation logs
+      - Redfish BIOS attributes
+    detection: >-
+      Kernel reports "Secure boot disabled" on a node in the hardened fleet, PCR 0/2/4/7 mismatches from the
+      attestation verifier, or a Redfish PATCH that sets SecureBootEnable to false.
+    mappings: [T1542.003]
+    sample_log: |
+      Nov 12 03:10:02 dgx-h100-r04-n11 kernel: secureboot: Secure boot disabled
+      2026-11-12 03:12:44.118 - keylime.tpm - ERROR - PCR #7: 9a3c41e8f0b2d7c6a5e4f3b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2 from quote (from agent dgx-h100-r04-n11) does not match expected value ['b1f2e3d4c5b6a7980f1e2d3c4b5a69788796a5b4c3d2e1f0a9b8c7d6e5f4a3b2']
+      2026-11-12 03:12:44.120 - keylime.verifier - WARNING - Agent dgx-h100-r04-n11 failed, stopping polling
+
+  - id: CMP-004
+    name: In-band host reaching the out-of-band BMC network
+    severity: High
+    description: >-
+      Production, GPU and tenant networks should never reach BMC addresses. IPMI-over-LAN (UDP 623) from a GPU node can
+      dump RAKP password hashes or abuse cipher suite 0, and Redfish/SSH access means a pivot onto the management plane.
+    log_sources:
+      - Zeek conn.log / NDR
+      - Firewall logs between production and OOB zones
+    detection: >-
+      Any flow from production, GPU or tenant subnets to BMC ranges on UDP 623, TCP 443, 22, 5900 or 623, or IPMI
+      sessions that use cipher suite 0 or a null user name.
+    mappings: [T1046, T1212]
+    sample_log: |
+      {"ts":1794462601.512,"uid":"CpX1yL3k8Hb2Gq9v4","id.orig_h":"10.50.7.13","id.orig_p":41733,"id.resp_h":"10.200.11.104","id.resp_p":623,"proto":"udp","duration":0.021,"orig_bytes":88,"resp_bytes":120,"conn_state":"SF","local_orig":true,"local_resp":true,"history":"Dd","orig_pkts":2,"resp_pkts":2}
+
+  - id: CMP-005
+    name: Hypervisor shell enabled or unsigned VIB installed
+    severity: High
+    description: >-
+      Attackers on ESXi lower the software acceptance level and install unsigned VIBs for persistence that survives
+      reboots, or enable SSH and the ESXi Shell to run tooling directly on hosts carrying GPU VMs.
+    log_sources:
+      - ESXi shell.log / hostd.log (syslog)
+      - vCenter events
+    detection: >-
+      "esxcli software acceptance set" to CommunitySupported, "esxcli software vib install" with --no-sig-check or -f,
+      or SSH / ESXi Shell enabled outside a maintenance window.
+    mappings: [T1562.001, T1543]
+    sample_log: |
+      2026-11-12T04:51:22.118Z esx-r01-n05.corp.example shell[2112045]: [root]: esxcli software acceptance set --level=CommunitySupported
+      2026-11-12T04:51:40.733Z esx-r01-n05.corp.example shell[2112045]: [root]: esxcli software vib install -v /tmp/vmware-sys.vib -f --no-sig-check
+
+  - id: CMP-006
+    name: Sudoers modified or unexpected sudo-to-root on GPU nodes
+    severity: High
+    description: >-
+      Research users often get sudo on GPU nodes "temporarily". New sudoers entries, or root shells for accounts
+      outside the platform-admin group, are the usual path from user to persistent root.
+    log_sources:
+      - Linux auth.log / journald (sudo)
+      - Linux auditd (watch on /etc/sudoers and /etc/sudoers.d)
+    detection: >-
+      Any write to /etc/sudoers or /etc/sudoers.d/*, sudo to root by users outside the admin group, or
+      "sudo su -", "sudo -i" or "sudo bash" on compute nodes.
+    mappings: [T1548.003]
+    sample_log: |
+      Nov 12 05:22:01 dgx-h100-r04-n11 sudo:   jsmith : TTY=pts/3 ; PWD=/home/jsmith ; USER=root ; COMMAND=/usr/bin/tee -a /etc/sudoers.d/90-research
+      Nov 12 05:22:01 dgx-h100-r04-n11 sudo: pam_unix(sudo:session): session opened for user root(uid=0) by jsmith(uid=1042)
+
+  - id: CMP-007
+    name: New systemd unit or cron job on stateless GPU nodes
+    severity: High
+    description: >-
+      GPU nodes are built from images and managed by config management, so a hand-written systemd unit or cron entry is
+      a classic persistence mechanism for miners and implants.
+    log_sources:
+      - Linux auditd (watches on /etc/systemd, /etc/cron*, /var/spool/cron)
+      - File integrity monitoring
+    detection: >-
+      File creation or modification under /etc/systemd/system, /etc/cron.*, /var/spool/cron or ~/.config/systemd/user
+      by any process other than the config-management agent (Ansible, Salt, Puppet).
+    mappings: [T1543.002, T1053.003]
+    sample_log: |
+      type=SYSCALL msg=audit(1794463922.330:90551): arch=c000003e syscall=257 success=yes exit=3 a0=ffffff9c a1=7ffd2b1c3e10 a2=241 a3=1b6 items=2 ppid=88120 pid=88133 auid=1042 uid=0 gid=0 euid=0 comm="bash" exe="/usr/bin/bash" key="systemd_units"
+      type=PATH msg=audit(1794463922.330:90551): item=1 name="/etc/systemd/system/nvidia-telemetryd.service" inode=263401 dev=08:02 mode=0100644 ouid=0 ogid=0 nametype=CREATE
+
+  - id: CMP-008
+    name: Bare-metal node network-booted with an unapproved image
+    severity: High
+    description: >-
+      Provisioning systems (MAAS, Ironic, Foreman, Base Command Manager) can reimage any GPU node. A PXE or iPXE boot
+      serving a kernel or image outside the approved catalog is a fleet-wide implant path.
+    log_sources:
+      - DHCP / TFTP / HTTP boot server logs (dnsmasq, iPXE)
+      - Provisioning system audit logs
+    detection: >-
+      TFTP or HTTP boot downloads of kernels or images whose path or hash is not in the approved catalog, or node
+      deploy/reimage actions started by non-automation users.
+    mappings: [T1072]
+    sample_log: |
+      Nov 12 01:03:22 pxe-01 dnsmasq-dhcp[1401]: DHCPDISCOVER(eth1) a0:88:c2:45:1f:2e
+      Nov 12 01:03:22 pxe-01 dnsmasq-dhcp[1401]: DHCPOFFER(eth1) 10.200.40.17 a0:88:c2:45:1f:2e
+      Nov 12 01:03:25 pxe-01 dnsmasq-tftp[1401]: sent /srv/tftp/images/ubuntu-22.04-custom-jsmith/vmlinuz to 10.200.40.17
+
+  - id: CMP-009
+    name: GPU passed through to an unexpected virtual machine
+    severity: Medium
+    description: >-
+      Attaching a physical GPU (PCI vendor 10de) to a VM outside the GPU VM inventory hides workloads from
+      scheduler-level monitoring. It is a common way to run unsanctioned training or mining.
+    log_sources:
+      - libvirt / QEMU logs
+      - vCenter / Proxmox task logs
+    detection: >-
+      Hostdev or PCI passthrough attach of an NVIDIA device to a VM not in the GPU-VM inventory, or performed by an
+      account outside the virtualization automation group.
+    mappings: [T1564.006, T1496.001]
+    sample_log: |
+      2026-11-12 06:14:09.442+0000: 2231: info : qemuDomainAttachDeviceFlags:10412 : vm=tmp-build-77 uuid=1e2f3a4b-5c6d-4e7f-8a9b-0c1d2e3f4a5b device=<hostdev mode='subsystem' type='pci' managed='yes'><source><address domain='0x0000' bus='0x9b' slot='0x00' function='0x0'/></source></hostdev> pci_vendor=0x10de pci_device=0x2330 user=jsmith
+
+  - id: CMP-010
+    name: Chassis intrusion on a GPU server
+    severity: High
+    description: >-
+      A chassis-open sensor going off on a rack of eight-GPU servers worth several hundred thousand dollars each
+      points to GPU or drive theft, hardware implants, or maintenance done without a ticket.
+    log_sources:
+      - BMC System Event Log (IPMI SEL / Redfish LogService)
+    detection: >-
+      Any "General Chassis intrusion Asserted" SEL entry, or a GPU, NIC or drive serial change in Redfish inventory,
+      with no matching RMA or maintenance ticket. Correlate with physical access (FAC-008).
+    mappings: [T1200]
+    sample_log: |
+      1a3 | 11/12/2026 | 02:41:17 | Physical Security #0x73 | General Chassis intrusion | Asserted
+      1a4 | 11/12/2026 | 02:58:40 | Physical Security #0x73 | General Chassis intrusion | Deasserted

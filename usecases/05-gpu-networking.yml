@@ -1,0 +1,176 @@
+category: GPU Networking
+code: FAB
+layer: GPU & Physical Infrastructure
+scope: Ethernet, InfiniBand, RDMA / RoCE, NVLink, NVSwitch, BlueField DPUs, fabric management
+usecases:
+
+  - id: FAB-001
+    name: InfiniBand partition key (P_Key) violations
+    severity: High
+    description: >-
+      InfiniBand partitions separate tenants and storage traffic on the GPU fabric. Bad P_Key traps and rising
+      constraint-error counters show a host trying to talk outside its partition.
+    log_sources:
+      - OpenSM / NVIDIA UFM event logs
+      - InfiniBand port counters (perfquery, UFM telemetry)
+    detection: >-
+      Any Bad P_Key or Bad Q_Key trap (notice 257/258), or PortRcvConstraintErrors / PortXmitConstraintErrors
+      increasing on ports that face compute nodes. Resolve the LID and port to a host and tenant.
+    mappings: [T1599]
+    sample_log: |
+      Nov 12 06:12:44 ufm-01 opensm[3021]: osm_trap_rcv_process_request: Received Generic Notice type:1 num:257 (Bad P_Key) Producer:2 (Switch) from LID:0x01A4 TID:0x00000000000004d2
+      # Port counters: Lid 420 port 14 (CapMask: 0x5A00)
+      PortRcvConstraintErrors:.........412
+      PortXmitConstraintErrors:........0
+
+  - id: FAB-002
+    name: Rogue subnet manager takes over the InfiniBand fabric
+    severity: Critical
+    description: >-
+      The master subnet manager programs routing and partitions for the whole InfiniBand fabric. A compute node that
+      starts OpenSM with a high priority can take over, then redirect or join any partition.
+    log_sources:
+      - OpenSM / NVIDIA UFM logs
+      - sminfo polling
+    detection: >-
+      A master SM GUID that is not on the approved UFM/SM list, any SM state change to MASTER from a compute node, or
+      an opensm process running on hosts outside the fabric-management group.
+    mappings: [T1557, T1599]
+    sample_log: |
+      Nov 12 06:30:02 dgx-h100-r04-n11 OpenSM[88412]: Entering MASTER state
+      Nov 12 06:30:03 ufm-01 opensm[3021]: osm_sm_state_mgr_process: Remote SM with GUID 0xb83fd20300a1c2e4 and priority 15 is now MASTER; local SM 0x0002c90300ab1234 entering STANDBY state
+
+  - id: FAB-003
+    name: NVSwitch fatal error or Fabric Manager in degraded mode
+    severity: High
+    description: >-
+      Fatal NVSwitch errors and NVLink training failures make Fabric Manager drop the HGX baseboard into degraded mode.
+      The whole node's GPU-to-GPU bandwidth is lost and large-model jobs fail. Repeats on one node can also point to
+      tampering or failing hardware.
+    log_sources:
+      - Linux kernel log (nvidia-nvswitch SXid messages)
+      - NVIDIA Fabric Manager log (/var/log/fabricmanager.log)
+    detection: >-
+      Any SXid marked Fatal, any Fabric Manager "degraded mode" or partition activation failure, or more than 3
+      non-fatal SXids per NVSwitch per hour.
+    sample_log: |
+      Nov 12 07:01:15 hgx-h100-r02-n05 kernel: nvidia-nvswitch2: SXid (PCI:0000:07:00.0): 24007, Fatal, Link 44 sourcetrack timeout error (First)
+      [Nov 12 2026 07:01:15] [ERROR] [tid 3412] detected NVSwitch fatal error 24007 on fid 0 switch id 2 port 44
+      [Nov 12 2026 07:01:16] [ERROR] [tid 3412] NVLink training failed, fabric manager entering degraded mode
+
+  - id: FAB-004
+    name: RoCE / RDMA traffic from hosts outside the fabric inventory
+    severity: High
+    description: >-
+      RDMA bypasses the host network stack and most host firewalls. RoCEv2 traffic from an unknown host, or crossing
+      tenant VRFs, can reach GPU memory and storage targets directly.
+    log_sources:
+      - sFlow / NetFlow from fabric switches (goflow2, NVIDIA NetQ)
+      - Switch ACL logs
+    detection: >-
+      UDP/4791 (RoCEv2) flows whose source is not in the GPU or storage node inventory, or whose source and
+      destination sit in different tenant VRFs or VNIs.
+    mappings: [T1599, T1039]
+    sample_log: |
+      {"type":"SFLOW_5","time_received_ns":1794470400123000000,"sequence_num":88123,"sampling_rate":4096,"sampler_address":"10.255.0.17","bytes":4136,"packets":1,"src_addr":"10.88.4.201","dst_addr":"10.90.1.12","etype":"IPv4","proto":"UDP","src_port":49152,"dst_port":4791,"in_if":61,"out_if":12,"src_mac":"a0:88:c2:45:1f:2e","dst_mac":"b8:3f:d2:a1:c2:e4"}
+
+  - id: FAB-005
+    name: Fabric switch configuration change outside a change window
+    severity: Medium
+    description: >-
+      Spectrum and InfiniBand switch changes to QoS (PFC/ECN), ACLs or routing can quietly wreck collective-
+      communication performance or open paths between tenants. They should come only from the automation pipeline.
+    log_sources:
+      - TACACS+ accounting
+      - Switch syslog / NVUE configuration history
+    detection: >-
+      "nv set", "nv unset" or "nv config apply" (or the vendor equivalent) run by a human account outside an approved
+      window, or any change to qos roce, acl or router bgp stanzas on GPU leaf and spine switches.
+    mappings: [T1562.004]
+    sample_log: |
+      Nov 12 22:47:13 tacacs-01 tac_plus[2201]: 10.255.0.21 k.osei pts/0 10.20.31.144 stop task_id=8812 timezone=UTC service=shell start_time=1794523633 cmd=nv set qos roce mode lossy <cr>
+      Nov 12 22:47:20 tacacs-01 tac_plus[2201]: 10.255.0.21 k.osei pts/0 10.20.31.144 stop task_id=8813 timezone=UTC service=shell start_time=1794523640 cmd=nv config apply -y <cr>
+
+  - id: FAB-006
+    name: Default or shared credentials used on fabric switches
+    severity: High
+    description: >-
+      Fabric switches often ship with default local accounts (cumulus, admin) and get missed during hardening.
+      Brute force or a successful login with them gives full control of the GPU network.
+    log_sources:
+      - Switch syslog (sshd)
+      - TACACS+ / RADIUS authentication logs
+    detection: >-
+      5 or more failed logins on a switch from one source in 10 minutes, or any successful login with a local default
+      account instead of TACACS/RADIUS-backed named users.
+    mappings: [T1078.001, T1110.001]
+    sample_log: |
+      Nov 12 23:02:41 leaf-gpu-07 sshd[5512]: Failed password for admin from 10.20.31.144 port 51822 ssh2
+      Nov 12 23:02:44 leaf-gpu-07 sshd[5512]: Failed password for admin from 10.20.31.144 port 51822 ssh2
+      Nov 12 23:02:49 leaf-gpu-07 sshd[5514]: Accepted password for cumulus from 10.20.31.144 port 51830 ssh2
+
+  - id: FAB-007
+    name: Unknown device appears on a GPU fabric port
+    severity: High
+    description: >-
+      A new LLDP neighbor or InfiniBand node GUID on a port that should face a known GPU server can mean a rogue device,
+      a laptop plugged into the fabric, or a swapped NIC.
+    log_sources:
+      - NVIDIA NetQ / switch LLDP events
+      - NVIDIA UFM topology change events
+    detection: >-
+      An LLDP neighbor or IB node GUID on a leaf port that does not match the cabling plan or CMDB, or a new chassis
+      MAC or GUID not in hardware inventory.
+    mappings: [T1200]
+    sample_log: |
+      {"timestamp":"2026-11-12T03:31:41Z","source":"netq","type":"lldp","hostname":"leaf-gpu-07","ifname":"swp14","message":"LLDP neighbor changed","old_peer":{"hostname":"dgx-h100-r04-n11","port":"enp27s0np0"},"new_peer":{"hostname":"ubuntu-lab-nuc","port":"enp1s0","chassis_mac":"00:1b:21:aa:42:10"},"cmdb_match":false}
+
+  - id: FAB-008
+    name: PFC pause storm on the lossless RoCE fabric
+    severity: High
+    description: >-
+      A host or NIC sending continuous priority-flow-control pause frames can freeze lossless queues across the fabric
+      and stall every collective operation in a training job. It can be a fault or a denial-of-service attempt.
+    log_sources:
+      - Switch syslog (PFC watchdog)
+      - Switch telemetry (PFC pause counters)
+    detection: >-
+      Any PFC watchdog storm detection, or PFC pause frames received on a host-facing port above 10x its 1-hour
+      baseline.
+    mappings: [T1498]
+    sample_log: |
+      Nov 12 09:44:31.118 leaf-gpu-03 NOTICE swss#orchagent: :- handleWdNotification: PFC Watchdog detected PFC storm on port Ethernet64, queue index 3, queue id 0x15000000000292 and port id 0x1000000000017.
+
+  - id: FAB-009
+    name: Port mirroring or ERSPAN session created on the GPU fabric
+    severity: High
+    description: >-
+      SPAN and ERSPAN copy fabric traffic (including unencrypted RDMA payloads and storage reads) to another port or
+      a remote IP. A new mirror session is a sniffing setup unless it is documented.
+    log_sources:
+      - TACACS+ accounting
+      - Switch configuration audit logs
+    detection: >-
+      Creation of any SPAN or ERSPAN session on GPU leaf or spine switches, especially ERSPAN whose destination IP is
+      outside the monitoring VLAN.
+    mappings: [T1040]
+    sample_log: |
+      Nov 12 23:15:02 tacacs-01 tac_plus[2201]: 10.255.0.21 k.osei pts/0 10.20.31.144 stop task_id=8840 timezone=UTC service=shell start_time=1794525302 cmd=nv set system port-mirror session 1 erspan source-port swp14 <cr>
+      Nov 12 23:15:09 tacacs-01 tac_plus[2201]: 10.255.0.21 k.osei pts/0 10.20.31.144 stop task_id=8841 timezone=UTC service=shell start_time=1794525309 cmd=nv set system port-mirror session 1 erspan destination dest-ip 203.0.113.80 <cr>
+
+  - id: FAB-010
+    name: BlueField DPU mode switch or NIC firmware burn
+    severity: High
+    description: >-
+      BlueField DPUs and SuperNICs enforce tenant isolation and offloaded firewalling. Switching a DPU to NIC mode, or
+      burning firmware with mlxconfig or flint outside maintenance, removes that enforcement point or implants firmware.
+    log_sources:
+      - Linux auditd (execve of mlxconfig / flint / mstfwmanager)
+      - DPU BMC / rshim logs
+    detection: >-
+      mlxconfig "set" of INTERNAL_CPU_OFFLOAD_ENGINE or INTERNAL_CPU_MODEL, or any flint or mstfwmanager burn, on hosts
+      or DPU Arm cores outside an approved change. Also flag DPU/NIC firmware versions that drift from baseline.
+    mappings: [T1542.002, T1562.004]
+    sample_log: |
+      type=EXECVE msg=audit(1794478000.512:93011): argc=6 a0="mlxconfig" a1="-d" a2="/dev/mst/mt41692_pciconf0" a3="-y" a4="s" a5="INTERNAL_CPU_OFFLOAD_ENGINE=1"
+      type=SYSCALL msg=audit(1794478000.512:93011): arch=c000003e syscall=59 success=yes exit=0 ppid=77120 pid=77188 auid=1042 uid=0 euid=0 comm="mlxconfig" exe="/usr/bin/mlxconfig" key="nic_fw_tools"

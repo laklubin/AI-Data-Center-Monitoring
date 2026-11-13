@@ -1,0 +1,116 @@
+category: Backup & Resilience
+code: BKP
+layer: Data & Operations
+added: true
+scope: Backup platforms, storage snapshots, object lock / WORM, checkpoint retention, disaster recovery
+usecases:
+
+  - id: BKP-001
+    name: Backup job deleted or retention cut on checkpoint backups
+    severity: Critical
+    description: >-
+      Ransomware operators delete backup jobs and shorten retention before encrypting. For AI teams the backups of
+      checkpoints and curated datasets represent months of GPU time.
+    log_sources:
+      - Backup platform audit logs (Veeam, Rubrik, Cohesity, Commvault)
+    detection: >-
+      Backup job or policy deletion, retention reductions, or immutable-copy settings removed for checkpoint, dataset
+      or model-registry protection groups, outside a change ticket.
+    mappings: [T1490]
+    sample_log: |
+      {"ts":"2026-11-12T23:02:41Z","platform":"backup-mgmt","user":"CORP\\jsmith","src_ip":"10.20.44.118","action":"JobDeleted","job":"ckpt-llm-70b-daily","policy":{"retention_days_before":30,"retention_days_after":null},"immutable_copies_affected":0,"change_ticket":null}
+
+  - id: BKP-002
+    name: Storage snapshots deleted or snapshot policy removed
+    severity: Critical
+    description: >-
+      Snapshots on checkpoint volumes are the fastest restore path after deletion or encryption. Wiping them, or
+      turning off the snapshot policy, removes that path.
+    log_sources:
+      - Storage array command audit logs (NetApp ONTAP, VAST, WEKA, Pure)
+    detection: >-
+      Bulk snapshot deletion (wildcards or more than 10 snapshots), snapshot policy set to none, or snapshot-lock
+      changes on checkpoint and dataset volumes.
+    mappings: [T1490]
+    sample_log: |
+      Thu Nov 12 2026 23:10:02 +00:00 [kern_audit:info:2112] 8003e8000000a1f0 :: cluster1-01:ssh :: 10.20.44.118:53011 :: cluster1:admin :: volume snapshot delete -vserver svm-ai -volume checkpoints -snapshot * -force true :: Success
+      Thu Nov 12 2026 23:10:19 +00:00 [kern_audit:info:2112] 8003e8000000a1f1 :: cluster1-01:ssh :: 10.20.44.118:53011 :: cluster1:admin :: volume modify -vserver svm-ai -volume checkpoints -snapshot-policy none :: Success
+
+  - id: BKP-003
+    name: Object Lock retention bypassed on the checkpoint vault
+    severity: Critical
+    description: >-
+      Governance-mode Object Lock can be bypassed by principals holding s3:BypassGovernanceRetention. Shortening
+      retention on checkpoint objects is the step right before deleting them.
+    log_sources:
+      - AWS CloudTrail S3 data events
+      - S3-compatible storage audit logs (MinIO, Ceph)
+    detection: >-
+      PutObjectRetention with bypass-governance-retention, PutObjectLockConfiguration changes, or retention dates moved
+      earlier, on buckets designated as backup or checkpoint vaults.
+    mappings: [T1490, T1485]
+    sample_log: |
+      {"eventVersion":"1.10","userIdentity":{"type":"AssumedRole","arn":"arn:aws:sts::111122223333:assumed-role/platform-admin/d.ivanov","accountId":"111122223333"},"eventTime":"2026-11-12T23:20:44Z","eventSource":"s3.amazonaws.com","eventName":"PutObjectRetention","awsRegion":"us-east-1","sourceIPAddress":"203.0.113.77","userAgent":"aws-cli/2.17.40","requestParameters":{"bucketName":"ai-checkpoint-vault","key":"llm-70b/step-120000/model-00001-of-00030.safetensors","retention":{"Mode":"GOVERNANCE","RetainUntilDate":"2026-11-13T00:00:00Z"},"x-amz-bypass-governance-retention":"true"},"responseElements":null,"readOnly":false,"eventType":"AwsApiCall","managementEvent":false,"recipientAccountId":"111122223333","eventCategory":"Data"}
+
+  - id: BKP-004
+    name: Burst of checkpoint object deletions
+    severity: Critical
+    description: >-
+      Batch deletes of thousands of checkpoint shards in minutes destroy training progress. They are also a common
+      extortion step once data has been copied out.
+    log_sources:
+      - AWS CloudTrail S3 data events (DeleteObject / DeleteObjects)
+      - S3-compatible storage audit logs
+    detection: >-
+      More than 1,000 objects deleted from checkpoint or model buckets by one principal in 10 minutes, or any deletion
+      from vault buckets by human identities.
+    mappings: [T1485]
+    sample_log: |
+      {"eventVersion":"1.10","userIdentity":{"type":"AssumedRole","arn":"arn:aws:sts::111122223333:assumed-role/platform-admin/d.ivanov","accountId":"111122223333"},"eventTime":"2026-11-12T23:25:03Z","eventSource":"s3.amazonaws.com","eventName":"DeleteObjects","awsRegion":"us-east-1","sourceIPAddress":"203.0.113.77","userAgent":"aws-cli/2.17.40","requestParameters":{"bucketName":"ai-checkpoint-vault","delete":"","quiet":"true"},"responseElements":null,"additionalEventData":{"objectsDeleted":1000},"readOnly":false,"eventType":"AwsApiCall","managementEvent":false,"recipientAccountId":"111122223333","eventCategory":"Data"}
+
+  - id: BKP-005
+    name: Backup restored to an unapproved destination
+    severity: High
+    description: >-
+      Restoring a dataset or model backup to a workstation or unknown host is data theft that never touches the
+      production storage being watched.
+    log_sources:
+      - Backup platform audit logs
+    detection: >-
+      Restore jobs whose destination is not an approved DR or restore target, especially file-level restores of
+      dataset or model backups to endpoints.
+    mappings: [T1074]
+    sample_log: |
+      {"ts":"2026-11-12T23:40:12Z","platform":"backup-mgmt","user":"CORP\\svc-backup","action":"RestoreStarted","source_backup":"datasets-curated-weekly/2026-11-08","restore_type":"file-level","destination_host":"lt-rsrch-118.corp.example","destination_path":"C:\\Users\\jsmith\\Downloads\\restore","size_bytes":412312312332,"approved_restore_targets":["dr-stor-01","dr-stor-02"]}
+
+  - id: BKP-006
+    name: Backup administrator added or MFA removed
+    severity: High
+    description: >-
+      Backup consoles are high-value targets because they can delete every copy at once. A new admin, or MFA removed
+      on an existing admin, is usually the setup step.
+    log_sources:
+      - Backup platform audit logs
+    detection: >-
+      Role assignments to backup administrator, MFA disabled for backup admins, or new API tokens on the backup
+      platform, outside identity governance.
+    mappings: [T1098, T1556.006]
+    sample_log: |
+      {"ts":"2026-11-12T22:51:09Z","platform":"backup-mgmt","user":"CORP\\jsmith","src_ip":"10.20.44.118","action":"UserRoleAssigned","target_user":"CORP\\tmp-restore","role":"Backup Administrator","mfa_required":false,"change_ticket":null}
+
+  - id: BKP-007
+    name: Checkpoint fails integrity verification on resume
+    severity: High
+    description: >-
+      Resuming from a checkpoint whose shards no longer match the signed manifest means the weights were changed at
+      rest. That could be a backdoor inserted mid-training or silent corruption.
+    log_sources:
+      - Training framework / checkpoint loader logs
+      - Model-signing verification logs
+    detection: >-
+      Any shard hash mismatch or signature failure when loading a checkpoint, or a resume that disabled verification.
+    mappings: [AML.T0018, T1565.001]
+    sample_log: |
+      2026-11-12 23:55:02,118 [rank0] INFO checkpoint.py:211 resuming from s3://ai-checkpoint-vault/llm-70b/step-120000/
+      2026-11-12 23:55:41,552 [rank0] ERROR checkpoint.py:248 integrity check failed for model-00017-of-00030.safetensors: sha256 3b7e41c9…a2c1 != manifest 9a2f07d3…e1e0 (manifest signed by release-signing-2026, signature valid)
+      2026-11-12 23:55:41,553 [rank0] ERROR train.py:96 aborting resume: checkpoint manifest mismatch (1 of 30 shards)

@@ -1,0 +1,130 @@
+category: AI Gateway & Guardrails
+code: AGW
+layer: AI Stack
+added: true
+scope: LLM gateways (LiteLLM, Kong AI Gateway), guardrail engines (NeMo Guardrails, Llama Guard), prompt firewalls, model routing, token budgets
+usecases:
+
+  - id: AGW-001
+    name: Burst of jailbreak or prompt-injection attempts from one key
+    severity: Medium
+    description: >-
+      Guardrails block single attempts all day. What matters is persistence: one key or user cycling through
+      role-play, encoding and instruction-override techniques until something gets through.
+    log_sources:
+      - Guardrail engine verdict logs (NeMo Guardrails, Llama Guard / Prompt Guard)
+      - AI gateway request logs
+    detection: >-
+      10 or more blocked jailbreak or injection verdicts for one key or user in 10 minutes, a block rate above 50% of
+      their traffic, or several distinct technique categories. Raise to High if an allowed request follows.
+    mappings: [AML.T0054, AML.T0051.000, "LLM01:2025"]
+    sample_log: |
+      {"ts":"2026-11-12T10:41:22.118Z","gateway":"ai-gw-prod","route":"chat-public","api_key_id":"key-3c1d","user":"cust-99120","client_ip":"198.51.100.88","model":"llama-3.1-70b-instruct","rail":"input.jailbreak_detection","engine":"nemo-guardrails","verdict":"blocked","score":0.97,"categories":["role_play_override","instruction_override"],"prompt_sha256":"2e7d2c03a9507ae265ecf5b5356885a53393a2029d241394997265a1a25aefc6","window_10m":{"blocked":27,"total":31}}
+
+  - id: AGW-002
+    name: Guardrail plugin disabled or switched to monitor-only
+    severity: High
+    description: >-
+      Turning off prompt-guard, PII-redaction or content-safety plugins on the gateway removes protection from every
+      application behind it at once, and does it silently.
+    log_sources:
+      - AI gateway admin audit logs (Kong Enterprise, LiteLLM, Apigee)
+      - GitOps changes to gateway configuration
+    detection: >-
+      Gateway admin API calls that disable or delete guardrail plugins (ai-prompt-guard, PII sanitizers, content
+      safety) or change enforcement to log-only, outside GitOps.
+    mappings: [T1562.001]
+    sample_log: |
+      {"request_id":"b2a7c5d1e9f04a3b8c6d2e1f0a9b8c7d","request_timestamp":1794452821,"client_ip":"10.20.9.14","method":"PATCH","path":"/default/plugins/5f2c9a1e-7b4d-4c8e-a1f0-9d2b6e5c4a31","payload":"{\"name\":\"ai-prompt-guard\",\"enabled\":false}","status":200,"rbac_user_id":"0f1e2d3c-4b5a-4968-8778-695a4b3c2d1e","rbac_user_name":"jsmith","workspace":"default","ttl":2592000}
+
+  - id: AGW-003
+    name: Token spend far above budget (denial of wallet)
+    severity: Medium
+    description: >-
+      Huge prompts, max-length outputs and parallel batch calls can burn a team's monthly GPU or API budget in hours,
+      through a leaked key, a runaway script, or an attacker deliberately running up cost.
+    log_sources:
+      - AI gateway spend / usage logs (LiteLLM spend logs)
+      - Inference usage metering
+    detection: >-
+      Per-key or per-team spend above 3x the daily budget, budgets not enforced on keys with spend, or median prompt
+      size jumping to the model's context limit.
+    mappings: [AML.T0034, "LLM10:2025"]
+    sample_log: |
+      {"request_id":"chatcmpl-9f2c1a7e5b3d","call_type":"acompletion","api_key":"88dc28d0f030c55ed4ab77ed8faf098196cb1c05df778539800c9f1243fe6b4b","spend":0.4182,"total_tokens":139400,"prompt_tokens":131072,"completion_tokens":8328,"startTime":"2026-11-12T11:02:01.118Z","endTime":"2026-11-12T11:03:12.551Z","model":"llama-3.1-405b-instruct","user":"svc-batch-eval","team_id":"team-search","metadata":{"user_api_key_alias":"search-eval-key"},"budget":{"team_max_budget":500.0,"team_spend_today":2317.55,"enforced":false}}
+
+  - id: AGW-004
+    name: Confidential traffic routed to an unapproved model provider
+    severity: High
+    description: >-
+      Fallback routing that sends confidential prompts to an external provider when on-prem GPUs are saturated breaks
+      data-residency commitments. It can happen without anyone changing application code.
+    log_sources:
+      - AI gateway routing logs
+    detection: >-
+      Requests tagged confidential or restricted that were routed to external or non-approved models or regions,
+      including fallback and retry paths.
+    mappings: ["LLM02:2025", T1567]
+    sample_log: |
+      {"ts":"2026-11-12T11:30:44Z","gateway":"ai-gw-prod","app":"claims-assistant","data_classification":"confidential","requested_model":"default","routed_model":"external/frontier-model-x","provider_region":"us-west","policy":"confidential-data-onprem-only","policy_result":"violated","fallback_reason":"onprem_pool_saturated","tokens":5212}
+
+  - id: AGW-005
+    name: Credentials or regulated data pasted into prompts
+    severity: Medium
+    description: >-
+      Users paste access keys, private keys, customer records and source code into internal chat tools. Even when the
+      model is self-hosted, those prompts land in logs, traces and fine-tuning sets.
+    log_sources:
+      - Gateway input-redaction / DLP rail logs
+    detection: >-
+      Input rails detecting secrets (cloud keys, private keys, tokens) or regulated data above threshold, grouped by
+      user and app. Trigger credential rotation for any secret detected.
+    mappings: ["LLM02:2025", T1552]
+    sample_log: |
+      {"ts":"2026-11-12T12:02:19Z","gateway":"ai-gw-prod","route":"internal-chat","user":"jsmith@corp.example","rail":"input.sensitive_data","engine":"secret-scanner+presidio","verdict":"redacted","entities":[{"type":"AWS_ACCESS_KEY","count":1},{"type":"PRIVATE_KEY","count":1},{"type":"PERSON","count":4}],"model":"llama-3.1-70b-instruct"}
+
+  - id: AGW-006
+    name: Spike in unsafe outputs from a public-facing app
+    severity: Medium
+    description: >-
+      A rising rate of outputs flagged for weapons, crime or self-harm categories usually means a successful jailbreak
+      technique is spreading, and it carries legal and reputational risk.
+    log_sources:
+      - Output safety classifier logs (Llama Guard, cloud content-safety services)
+    detection: >-
+      Unsafe output verdicts above 5% of an app's traffic in an hour, any S4/S9-class verdicts, or unsafe outputs
+      concentrated on a few keys or sessions.
+    mappings: [AML.T0048, AML.T0054]
+    sample_log: |
+      {"ts":"2026-11-12T12:40:55Z","gateway":"ai-gw-prod","route":"public-chat","rail":"output.content_safety","engine":"llama-guard-3-8b","verdict":"unsafe","categories":["S2","S9"],"category_names":["Non-Violent Crimes","Indiscriminate Weapons"],"action":"blocked","api_key_id":"key-77a1","session_id":"s-55120","window_1h":{"unsafe":14,"total":40}}
+
+  - id: AGW-007
+    name: Clients calling model servers directly, bypassing the gateway
+    severity: High
+    description: >-
+      Guardrails, quotas, logging and authentication live in the gateway. A notebook or service talking straight to
+      vLLM or NIM pods gets raw model access with none of those controls.
+    log_sources:
+      - Cilium Hubble / service mesh access logs
+      - Kubernetes NetworkPolicy flow logs
+    detection: >-
+      Flows to inference pods on serving ports (8000, 8001, 8080) from any source other than the gateway pods, or
+      inference namespaces missing a default-deny ingress policy.
+    mappings: [T1562.001, "LLM10:2025"]
+    sample_log: |
+      {"flow":{"time":"2026-11-12T13:05:31.441Z","verdict":"FORWARDED","IP":{"source":"10.244.18.37","destination":"10.244.40.12","ipVersion":"IPv4"},"l4":{"TCP":{"source_port":51820,"destination_port":8000,"flags":{"SYN":true}}},"source":{"identity":48211,"namespace":"team-nlp","labels":["k8s:app=jupyter","k8s:io.kubernetes.pod.namespace=team-nlp"],"pod_name":"notebook-jsmith-0"},"destination":{"identity":51022,"namespace":"inference-prod","labels":["k8s:app=vllm-llama-70b","k8s:io.kubernetes.pod.namespace=inference-prod"],"pod_name":"vllm-llama-70b-0"},"Type":"L3_L4","node_name":"dgx-h100-r04-n11","traffic_direction":"INGRESS","is_reply":false,"Summary":"TCP Flags: SYN"}}
+
+  - id: AGW-008
+    name: Guardrail service timing out and failing open
+    severity: High
+    description: >-
+      When the guardrail model is overloaded, gateways configured to fail open pass traffic through unchecked.
+      Attackers can cause that on purpose by flooding the rail with expensive inputs first.
+    log_sources:
+      - AI gateway / guardrail engine logs
+    detection: >-
+      More than 5% of requests in 5 minutes passing unchecked because of rail timeouts or errors under fail-open, or
+      any production route configured as fail-open for safety rails.
+    mappings: [T1562.001, "LLM01:2025"]
+    sample_log: |
+      {"ts":"2026-11-12T13:44:10.551Z","gateway":"ai-gw-prod","route":"public-chat","rail":"input.jailbreak_detection","engine":"nemo-guardrails","status":"timeout","timeout_ms":800,"fail_mode":"open","action":"passed_unchecked","window_5m":{"unchecked":1840,"total":2012}}

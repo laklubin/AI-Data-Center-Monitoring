@@ -1,0 +1,576 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Data Center SIEM Use Cases</title>
+<meta name="description" content="SIEM detection use cases for AI GPU data centers: log source, sample log, detection logic and MITRE ATT&amp;CK, MITRE ATLAS and OWASP mappings for every use case.">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#12151A">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2312151A'/%3E%3Ccircle cx='16' cy='16' r='7' fill='%23FF8A3D'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#12151A;--panel:#1D222B;--panel-hi:#212732;--panel2:#161A21;--well:#0E1116;
+  --border:#2A2F3A;--border2:#363D4A;
+  --text:#E7EAEF;--dim:#9AA3B2;--faint:#626B7A;
+  --accent:#FF8A3D;--accent2:#FFB36B;--teal:#49C7C0;--lav:#B98CE0;
+  --crit:#E2555B;--high:#FF8A3D;--med:#E8C547;--low:#6FA8FF;
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --sans:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --display:"Space Grotesk",Inter,system-ui,sans-serif;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}
+body{margin:0;min-height:100vh;background-color:var(--bg);color:var(--text);font:15px/1.55 var(--sans);
+  background-image:radial-gradient(900px 520px at -8% -12%,rgba(255,138,61,.11),transparent 62%),
+                   radial-gradient(820px 500px at 108% -8%,rgba(185,140,224,.10),transparent 60%);
+  background-repeat:no-repeat}
+a{color:inherit}
+button,input,select{font:inherit;color:inherit}
+.wrap{max-width:1180px;margin:0 auto;padding-left:24px;padding-right:24px}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* header */
+header.top{position:sticky;top:0;z-index:20;background:rgba(18,21,26,.82);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);border-bottom:1px solid var(--border)}
+.top-in{display:flex;align-items:center;justify-content:space-between;gap:20px;min-height:62px}
+.brand{display:flex;align-items:center;gap:12px;text-decoration:none;min-width:0}
+.pulse{flex:none;width:10px;height:10px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 4px rgba(255,138,61,.14),0 0 18px rgba(255,138,61,.75)}
+.brand-text{display:flex;flex-direction:column;min-width:0}
+.brand-name{font:600 16px/1.2 var(--display);letter-spacing:-.01em}
+.brand-sub{font:400 11px/1.4 var(--mono);color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nav{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:4px 18px;font:500 12px/1 var(--mono)}
+.nav a{color:var(--dim);text-decoration:none;padding:6px 0}
+.nav a:hover{color:var(--text)}
+
+/* hero */
+.hero{padding-top:72px;padding-bottom:28px}
+.eyebrow{display:flex;align-items:center;gap:12px;font:500 12px/1.4 var(--mono);color:var(--teal);text-transform:uppercase;letter-spacing:.14em}
+.eyebrow::before{content:"";width:28px;height:1px;background:var(--teal);flex:none}
+h1{font:700 54px/1.04 var(--display);letter-spacing:-.025em;margin:18px 0 18px;max-width:900px;text-wrap:balance}
+.grad{background:linear-gradient(92deg,var(--accent),var(--accent2));-webkit-background-clip:text;background-clip:text;color:transparent}
+.lede{font-size:17px;color:var(--dim);max-width:760px;margin:0 0 34px}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--border);border:1px solid var(--border);border-radius:10px;overflow:hidden}
+.stat{background:var(--panel);padding:18px 20px}
+.stat b{display:block;font:600 34px/1.05 var(--display);letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.stat span{font:500 11px/1.4 var(--mono);color:var(--faint);text-transform:uppercase;letter-spacing:.08em}
+.dist{margin-top:22px}
+.dist-k{font:500 11px/1.4 var(--mono);color:var(--faint);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px}
+.bar{display:flex;gap:2px;height:10px;border-radius:999px;overflow:hidden;background:var(--panel)}
+.bar span{display:block;height:100%;min-width:3px}
+.legend{display:flex;flex-wrap:wrap;gap:6px 18px;margin-top:10px;font:400 12px/1.5 var(--mono);color:var(--dim)}
+.legend i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:7px;vertical-align:0}
+.legend em{font-style:normal;color:var(--faint);margin-left:4px}
+
+/* quote */
+.quote{position:relative;margin:44px 0 0;padding:30px 30px 28px 84px;background:var(--panel2);border:1px solid var(--border);border-radius:12px}
+.qmark{position:absolute;left:26px;top:6px;font:700 82px/1 var(--display);color:var(--accent)}
+.quote blockquote{margin:0;font:600 25px/1.3 var(--display);letter-spacing:-.01em}
+.quote figcaption{margin-top:12px;font:400 12px/1.6 var(--mono);color:var(--dim);max-width:860px}
+
+/* sections */
+.section{padding-top:64px}
+.sec-head{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:6px 20px;margin-bottom:20px}
+.sec-head h2{margin:0;font:600 28px/1.15 var(--display);letter-spacing:-.015em}
+.sec-sub{margin:0;font:400 12px/1.5 var(--mono);color:var(--faint)}
+
+/* coverage map */
+.layer{margin-bottom:22px}
+.layer-k{display:flex;align-items:center;gap:10px;margin-bottom:10px;font:500 11px/1.4 var(--mono);text-transform:uppercase;letter-spacing:.1em}
+.layer-k::after{content:"";flex:1;height:1px;background:var(--border)}
+.layer-k em{font-style:normal;color:var(--faint);letter-spacing:.04em}
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px}
+.tile{display:flex;flex-direction:column;gap:8px;text-align:left;padding:14px 16px 14px;background:var(--panel);border:1px solid var(--border);border-radius:10px;cursor:pointer;transition:border-color .15s,background .15s}
+.tile:hover{border-color:var(--lc);background:var(--panel-hi)}
+.tile-top{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+.tile-name{font:600 15px/1.3 var(--display)}
+.tile-n{font:600 13px/1 var(--mono);color:var(--lc)}
+.tile-scope{font-size:12.5px;line-height:1.45;color:var(--dim)}
+.tile-new{font:500 10px/1 var(--mono);color:var(--teal);border:1px solid rgba(73,199,192,.4);border-radius:999px;padding:3px 6px;margin-left:6px;vertical-align:2px;letter-spacing:.04em}
+.sevbar{display:flex;gap:2px;height:4px;border-radius:999px;overflow:hidden;margin-top:auto;background:var(--border)}
+.sevbar span{display:block;height:100%}
+
+/* browser */
+.tabs{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px}
+.tab{display:inline-flex;align-items:center;gap:7px;padding:7px 11px;border:1px solid var(--border);border-radius:999px;background:var(--panel);font:500 12px/1 var(--mono);color:var(--dim);cursor:pointer;transition:border-color .15s,color .15s,background .15s}
+.tab:hover{color:var(--text);border-color:var(--border2)}
+.tab[aria-pressed="true"]{color:var(--text);border-color:var(--accent);background:rgba(255,138,61,.10)}
+.tab i{width:7px;height:7px;border-radius:50%;flex:none}
+.tab em{font-style:normal;color:var(--faint)}
+.controls{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
+.search{flex:1 1 320px;display:flex}
+.search input{width:100%}
+input[type=search],select{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font:400 13px/1.2 var(--mono);color:var(--text);min-height:40px}
+input[type=search]::placeholder{color:var(--faint)}
+input[type=search]:focus,select:focus{outline:none;border-color:var(--accent)}
+select{cursor:pointer;padding-right:30px;-webkit-appearance:none;appearance:none;
+  background-image:linear-gradient(45deg,transparent 50%,var(--dim) 50%),linear-gradient(135deg,var(--dim) 50%,transparent 50%);
+  background-position:calc(100% - 16px) 50%,calc(100% - 11px) 50%;background-size:5px 5px;background-repeat:no-repeat}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:40px;padding:0 14px;background:var(--panel);border:1px solid var(--border);border-radius:8px;font:500 12px/1 var(--mono);color:var(--dim);cursor:pointer;transition:border-color .15s,color .15s}
+.btn:hover{color:var(--text);border-color:var(--border2)}
+.btn[aria-pressed="true"]{color:var(--text);border-color:var(--accent)}
+.result{font:400 12px/1.5 var(--mono);color:var(--faint);margin:0 0 10px;display:flex;flex-wrap:wrap;gap:4px 14px}
+.result b{color:var(--text);font-weight:500}
+.result button{all:unset;cursor:pointer;color:var(--accent)}
+.result button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+.uc-list{display:grid;gap:1px;background:var(--border);border:1px solid var(--border);border-radius:10px;overflow:hidden}
+.uc{display:grid;grid-template-columns:6px minmax(0,1fr) auto;gap:16px;padding:18px 20px;background:var(--panel);scroll-margin-top:86px;transition:background .15s}
+.uc:hover,.uc.open{background:var(--panel-hi)}
+.dot{width:6px;height:6px;border-radius:50%;margin-top:7px}
+.meta{font:500 11px/1.5 var(--mono);color:var(--faint);letter-spacing:.02em}
+.meta .uid{color:var(--dim)}
+.sev-inline{display:none}
+.title{margin:3px 0 6px;font:600 16.5px/1.35 var(--display);letter-spacing:-.005em}
+.tgl{all:unset;cursor:pointer}
+.tgl:hover{color:#fff}
+.tgl:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:4px}
+.desc{margin:0 0 10px;color:var(--dim);font-size:14px}
+.badges{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:9px}
+.badge{display:inline-flex;align-items:center;gap:6px;max-width:100%;padding:4px 8px;border:1px solid var(--border2);border:1px solid color-mix(in srgb,var(--c) 42%,transparent);border-radius:999px;background:color-mix(in srgb,var(--c) 8%,transparent);color:var(--c);font:500 11px/1.3 var(--mono);text-decoration:none}
+.badge:hover{background:color-mix(in srgb,var(--c) 16%,transparent)}
+.badge .bn{color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ls{font-size:13px;color:var(--dim);overflow-wrap:anywhere}
+.ls-k{font:500 11px/1 var(--mono);color:var(--faint);text-transform:uppercase;letter-spacing:.06em;margin-right:4px}
+.open-tgl{all:unset;cursor:pointer;display:inline-flex;align-items:center;gap:6px;margin-top:10px;font:500 11.5px/1.4 var(--mono);color:var(--accent)}
+.open-tgl:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:4px}
+.open-tgl .chev{display:inline-block;transition:transform .15s}
+.uc.open .open-tgl .chev{transform:rotate(90deg)}
+.sev{display:flex;align-items:center;align-self:start;gap:7px;font:600 12px/1.4 var(--mono);white-space:nowrap;padding-top:1px}
+.sev i{width:7px;height:7px;border-radius:50%}
+
+.details{margin-top:14px;display:grid;gap:14px}
+.details[hidden]{display:none}
+.d-k{font:500 11px/1.4 var(--mono);color:var(--faint);text-transform:uppercase;letter-spacing:.08em}
+.d-block p{margin:6px 0 0;font-size:14px;color:var(--text)}
+.d-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px}
+.d-actions{display:flex;gap:6px}
+.mini{background:transparent;border:1px solid var(--border2);border-radius:6px;padding:4px 9px;font:500 11px/1.2 var(--mono);color:var(--dim);cursor:pointer}
+.mini:hover{color:var(--text);border-color:var(--faint)}
+.mini.ok{color:var(--teal);border-color:rgba(73,199,192,.5)}
+.mini[aria-pressed="true"]{color:var(--text);border-color:var(--accent)}
+.log{margin:0;padding:12px 14px;background:var(--well);border:1px solid var(--border);border-radius:8px;font:400 12px/1.6 var(--mono);color:#D5E4D7;white-space:pre-wrap;overflow-wrap:anywhere;max-height:440px;overflow:auto;tab-size:4}
+.log::-webkit-scrollbar{width:8px;height:8px}
+.log::-webkit-scrollbar-thumb{background:var(--border2);border-radius:8px}
+
+.empty{padding:40px 20px;text-align:center;background:var(--panel);color:var(--dim);font:400 13px/1.6 var(--mono)}
+.more{display:flex;justify-content:center;margin-top:16px}
+.more[hidden]{display:none}
+
+footer.foot{margin-top:80px;border-top:1px solid var(--border);padding:28px 0 44px;font:400 12px/1.7 var(--mono);color:var(--faint)}
+footer.foot p{margin:0 0 10px;max-width:980px}
+footer.foot a{color:var(--dim)}
+footer.foot code{color:var(--dim)}
+
+@media (max-width:860px){
+  h1{font-size:42px}
+  .stats{grid-template-columns:repeat(2,1fr)}
+  .brand-sub{display:none}
+}
+@media (max-width:640px){
+  .wrap{padding-left:16px;padding-right:16px}
+  .top-in{min-height:56px;gap:12px}
+  .nav{flex-wrap:nowrap;gap:14px}
+  .nav a.ext{display:none}
+  .hero{padding-top:44px;padding-bottom:20px}
+  .tabs{flex-wrap:nowrap;overflow-x:auto;margin-left:-16px;margin-right:-16px;padding:0 16px 6px;scrollbar-width:none}
+  .tabs::-webkit-scrollbar{display:none}
+  .tab{flex:none}
+  h1{font-size:34px}
+  .lede{font-size:15.5px}
+  .stat{padding:14px 16px}
+  .stat b{font-size:28px}
+  .quote{padding:56px 18px 20px}
+  .qmark{left:16px;top:2px;font-size:64px}
+  .quote blockquote{font-size:21px}
+  .section{padding-top:48px}
+  .sec-head h2{font-size:24px}
+  .uc{grid-template-columns:6px minmax(0,1fr);gap:12px;padding:16px 14px}
+  .uc .sev{display:none}
+  .sev-inline{display:inline}
+  .controls .btn{flex:1 1 auto}
+  select{flex:1 1 140px}
+}
+@media (max-width:420px){
+  .nav a.cov{display:none}
+  .brand-name{font-size:15px}
+}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}*{transition:none!important}}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap top-in">
+    <a class="brand" href="#top" aria-label="AI Data Center SIEM Use Cases, back to top">
+      <span class="pulse" aria-hidden="true"></span>
+      <span class="brand-text">
+        <span class="brand-name">AI Data Center SIEM Use Cases</span>
+        <span class="brand-sub">GPU infrastructure · AI platform · detection engineering — compiled &amp; maintained by LK</span>
+      </span>
+    </a>
+    <nav class="nav" aria-label="Primary">
+      <a class="cov" href="#coverage">Coverage</a>
+      <a href="#browser">Browse</a>
+      <a class="ext" href="https://attack.mitre.org/" target="_blank" rel="noopener">MITRE ATT&amp;CK ↗</a>
+      <a class="ext" href="https://atlas.mitre.org/" target="_blank" rel="noopener">MITRE ATLAS ↗</a>
+      <a class="ext" href="https://genai.owasp.org/llm-top-10/" target="_blank" rel="noopener">OWASP GenAI ↗</a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+  <section class="hero wrap">
+    <div class="eyebrow">AI factory · GPU data center detection engineering</div>
+    <h1>SIEM use cases from the <span class="grad">GPU</span> rack to the <span class="grad">agent</span> layer</h1>
+    <p class="lede">A detection library for AI GPU data centers. Each use case gives the log source to collect, a sample log for building parsers and testing rules, and detection logic mapped to MITRE ATT&amp;CK, MITRE ATLAS and OWASP. Coverage runs from identity and the network edge, through the GPU fabric, bare metal, Kubernetes and schedulers, up to model serving, LLM applications, RAG and the facility itself.</p>
+    <div class="stats" id="stats" aria-live="polite">
+      <div class="stat"><b>—</b><span>use cases</span></div>
+      <div class="stat"><b>—</b><span>domains</span></div>
+      <div class="stat"><b>—</b><span>critical</span></div>
+      <div class="stat"><b>—</b><span>mapped techniques</span></div>
+    </div>
+    <div class="dist">
+      <div class="dist-k">Use cases by layer</div>
+      <div class="bar" id="layerBar" role="img" aria-label="Use cases by layer"></div>
+      <div class="legend" id="layerLegend"></div>
+    </div>
+    <div class="dist">
+      <div class="dist-k">Use cases by severity</div>
+      <div class="bar" id="sevBar" role="img" aria-label="Use cases by severity"></div>
+      <div class="legend" id="sevLegend"></div>
+    </div>
+
+    <figure class="quote">
+      <span class="qmark" aria-hidden="true">&ldquo;</span>
+      <blockquote>Every GPU-hour is money and every checkpoint is IP. Instrument both.</blockquote>
+      <figcaption>Start with the Critical use cases on the control planes (identity, BMC, Kubernetes, Slurm and the model registry), then work outward to the GPU fabric, the AI stack and the facility.</figcaption>
+    </figure>
+  </section>
+
+  <section id="coverage" class="wrap section">
+    <div class="sec-head">
+      <h2>Coverage map</h2>
+      <p class="sec-sub" id="coverageSub">domains grouped by layer · click a domain to browse it</p>
+    </div>
+    <div id="coverageGrid"></div>
+  </section>
+
+  <section id="browser" class="wrap section">
+    <div class="sec-head">
+      <h2>Browse the library</h2>
+      <p class="sec-sub">use case name · log source · sample log · detection logic · mappings</p>
+    </div>
+    <div class="tabs" id="tabs" aria-label="Filter by domain"></div>
+    <div class="controls">
+      <label class="search"><span class="sr">Search use cases</span><input id="q" type="search" placeholder="search name, log source, event ID, technique…" autocomplete="off" spellcheck="false"></label>
+      <label><span class="sr">Severity</span><select id="fSev"><option value="">all severities</option></select></label>
+      <label><span class="sr">Framework</span><select id="fFw"><option value="">all frameworks</option></select></label>
+      <button id="btnExpand" class="btn" type="button" aria-pressed="false">expand all</button>
+      <button id="btnCsv" class="btn" type="button" title="Download the filtered use cases as CSV">CSV ↓</button>
+      <button id="btnJson" class="btn" type="button" title="Download the filtered use cases as JSON">JSON ↓</button>
+    </div>
+    <div class="result" id="result" aria-live="polite"></div>
+    <div class="uc-list" id="list"><div class="empty">loading use cases…</div></div>
+    <div class="more" id="moreWrap" hidden><button id="more" class="btn" type="button">load 50 more ↓</button></div>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <p>Sources: MITRE ATT&amp;CK (Enterprise &amp; ICS), MITRE ATLAS, OWASP Top 10 for LLM Applications 2025, OWASP API Security Top 10 2023, and vendor logging documentation. Sample logs are synthetic. Hostnames, accounts, keys and IP addresses (RFC 1918 / RFC 5737 ranges) are made up, and fields are trimmed to what the detection needs. Field names follow each product's documented format where possible, but formats vary by version and collector, so check them against your own parsers before relying on a rule. Thresholds are starting points; tune them to your own baseline.</p>
+    <p>Data: <a href="usecases.json">usecases.json</a> · source: <a href="https://github.com/laklubin/AI-Data-Center-Monitoring" target="_blank" rel="noopener">github.com/laklubin/AI-Data-Center-Monitoring</a> (one YAML file per domain in <code>usecases/</code>)</p>
+  </div>
+</footer>
+
+<noscript><p class="wrap" style="color:#9AA3B2;font-family:monospace">This page needs JavaScript to render the use case library. The raw data is in usecases.json.</p></noscript>
+
+<script>
+(() => {
+  "use strict";
+  const PAGE = 50;
+  const LAYER_COLORS = {
+    "Identity & Perimeter": "#6FA8FF",
+    "GPU & Physical Infrastructure": "#8FD14F",
+    "Platform & Pipeline": "#49C7C0",
+    "AI Stack": "#B98CE0",
+    "Data & Operations": "#F07FA8"
+  };
+  const SEVERITIES = ["Critical", "High", "Medium", "Low"];
+  const SEV_COLORS = { Critical: "#E2555B", High: "#FF8A3D", Medium: "#E8C547", Low: "#6FA8FF" };
+  const FW_ORDER = ["ATT&CK", "ATT&CK ICS", "ATLAS", "OWASP LLM", "OWASP API"];
+  const FW_COLORS = { "ATT&CK": "#F07F84", "ATT&CK ICS": "#F2A65A", "ATLAS": "#49C7C0", "OWASP LLM": "#B98CE0", "OWASP API": "#6FA8FF" };
+
+  const $ = (s) => document.querySelector(s);
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const fmt = (n) => n.toLocaleString("en-US");
+  const ID_RE = /^[A-Z]{2,4}-\d{3}$/;
+
+  let DB = null, UC = [], FW = {};
+  const st = { cat: "ALL", q: "", sev: "", fw: "", shown: PAGE, all: false, open: new Set(), pretty: new Set() };
+
+  // Pretty-print the JSON lines of a sample log; returns null when there is nothing to format.
+  function prettyLog(text) {
+    let changed = false;
+    const out = text.split("\n").map((line) => {
+      const t = line.trim();
+      if (t.startsWith("{") && t.endsWith("}")) {
+        try { const s = JSON.stringify(JSON.parse(t), null, 2); changed = true; return s; } catch (e) { /* not JSON: keep the line as-is */ }
+      }
+      return line;
+    }).join("\n");
+    return changed ? out : null;
+  }
+
+  function fwOf(id) {
+    if (/^AML\.T\d{4}/.test(id)) return "ATLAS";
+    if (/^T0\d{3}/.test(id)) return "ATT&CK ICS";
+    if (/^T1\d{3}/.test(id)) return "ATT&CK";
+    if (/^LLM\d{2}:/.test(id)) return "OWASP LLM";
+    if (/^API\d{1,2}:/.test(id)) return "OWASP API";
+    return "Other";
+  }
+  function fwUrl(id) {
+    const f = fwOf(id);
+    if (f === "ATLAS") return "https://atlas.mitre.org/techniques/" + id;
+    if (f === "ATT&CK" || f === "ATT&CK ICS") return "https://attack.mitre.org/techniques/" + id.replace(".", "/") + "/";
+    if (f === "OWASP LLM") return "https://genai.owasp.org/llm-top-10/";
+    if (f === "OWASP API") return "https://owasp.org/API-Security/editions/2023/en/0x11-t10/";
+    return "#";
+  }
+  const countBy = (arr, key) => arr.reduce((m, x) => ((m[x[key]] = (m[x[key]] || 0) + 1), m), {});
+
+  /* ---------- static summary blocks ---------- */
+  function renderStats() {
+    const techniques = new Set();
+    UC.forEach((u) => u.mappings.forEach((m) => techniques.add(m)));
+    const critical = UC.filter((u) => u.severity === "Critical").length;
+    const cells = [[UC.length, "use cases"], [DB.categories.length, "domains"], [critical, "critical"], [techniques.size, "mapped techniques"]];
+    $("#stats").innerHTML = cells.map(([n, l]) => `<div class="stat"><b>${fmt(n)}</b><span>${l}</span></div>`).join("");
+  }
+  function renderBars() {
+    const byLayer = countBy(UC, "layer");
+    const layers = DB.layers.filter((l) => byLayer[l]);
+    $("#layerBar").innerHTML = layers.map((l) => `<span style="flex:${byLayer[l]};background:${LAYER_COLORS[l] || "#888"}" title="${esc(l)}: ${byLayer[l]}"></span>`).join("");
+    $("#layerLegend").innerHTML = layers.map((l) => `<span><i style="background:${LAYER_COLORS[l] || "#888"}"></i>${esc(l)}<em>${byLayer[l]}</em></span>`).join("");
+    const bySev = countBy(UC, "severity");
+    const sevs = SEVERITIES.filter((s) => bySev[s]);
+    $("#sevBar").innerHTML = sevs.map((s) => `<span style="flex:${bySev[s]};background:${SEV_COLORS[s]}" title="${s}: ${bySev[s]}"></span>`).join("");
+    $("#sevLegend").innerHTML = sevs.map((s) => `<span><i style="background:${SEV_COLORS[s]}"></i>${s}<em>${bySev[s]}</em></span>`).join("");
+  }
+  function renderCoverage() {
+    const byCat = {};
+    UC.forEach((u) => { (byCat[u.category] = byCat[u.category] || []).push(u); });
+    let html = "";
+    DB.layers.forEach((layer) => {
+      const cats = DB.categories.filter((c) => c.layer === layer);
+      if (!cats.length) return;
+      const lc = LAYER_COLORS[layer] || "#888";
+      const n = cats.reduce((s, c) => s + (byCat[c.name] || []).length, 0);
+      html += `<div class="layer"><div class="layer-k" style="color:${lc}">${esc(layer)} <em>${cats.length} domains · ${n} use cases</em></div><div class="tiles">`;
+      cats.forEach((c) => {
+        const list = byCat[c.name] || [];
+        const sv = countBy(list, "severity");
+        const segs = SEVERITIES.filter((s) => sv[s]).map((s) => `<span style="flex:${sv[s]};background:${SEV_COLORS[s]}" title="${s}: ${sv[s]}"></span>`).join("");
+        const tip = SEVERITIES.filter((s) => sv[s]).map((s) => `${sv[s]} ${s.toLowerCase()}`).join(", ");
+        html += `<button class="tile" type="button" data-cat="${esc(c.name)}" style="--lc:${lc}" aria-label="${esc(c.name)}: ${list.length} use cases (${tip}). Browse.">
+          <span class="tile-top"><span class="tile-name">${esc(c.name)}${c.added ? '<span class="tile-new">added</span>' : ""}</span><span class="tile-n">${list.length}</span></span>
+          <span class="tile-scope">${esc(c.scope)}</span>
+          <span class="sevbar" title="${esc(tip)}">${segs}</span>
+        </button>`;
+      });
+      html += `</div></div>`;
+    });
+    $("#coverageGrid").innerHTML = html;
+    $("#coverageSub").textContent = `${DB.categories.length} domains in ${DB.layers.length} layers · click a domain to browse it`;
+  }
+  function renderTabs() {
+    const byCat = countBy(UC, "category");
+    const pill = (val, label, n, color) =>
+      `<button class="tab" type="button" data-cat="${esc(val)}" aria-pressed="${st.cat === val}">${color ? `<i style="background:${color}"></i>` : ""}${esc(label)} <em>${n}</em></button>`;
+    $("#tabs").innerHTML = pill("ALL", "ALL", UC.length, null) +
+      DB.categories.map((c) => pill(c.name, c.name, byCat[c.name] || 0, LAYER_COLORS[c.layer])).join("");
+  }
+  function renderSelects() {
+    const bySev = countBy(UC, "severity");
+    $("#fSev").innerHTML = `<option value="">all severities</option>` +
+      SEVERITIES.filter((s) => bySev[s]).map((s) => `<option value="${s}">${s} (${bySev[s]})</option>`).join("");
+    const fwCount = {};
+    UC.forEach((u) => new Set(u.mappings.map(fwOf)).forEach((f) => (fwCount[f] = (fwCount[f] || 0) + 1)));
+    $("#fFw").innerHTML = `<option value="">all frameworks</option>` +
+      FW_ORDER.filter((f) => fwCount[f]).map((f) => `<option value="${esc(f)}">${esc(f)} (${fwCount[f]})</option>`).join("");
+  }
+
+  /* ---------- filtering + list ---------- */
+  function filtered() {
+    const terms = st.q.toLowerCase().split(/\s+/).filter(Boolean);
+    return UC.filter((u) =>
+      (st.cat === "ALL" || u.category === st.cat) &&
+      (!st.sev || u.severity === st.sev) &&
+      (!st.fw || u.mappings.some((m) => fwOf(m) === st.fw)) &&
+      terms.every((t) => u._hay.includes(t)));
+  }
+  function badge(m) {
+    const f = fwOf(m), c = FW_COLORS[f] || "#9AA3B2", name = (FW[m] && FW[m].name) || "";
+    return `<a class="badge" style="--c:${c}" href="${fwUrl(m)}" target="_blank" rel="noopener" title="${esc(f)} · ${esc(m)} ${esc(name)}">${esc(m)}${name ? ` <span class="bn">${esc(name)}</span>` : ""}</a>`;
+  }
+  function card(u) {
+    const open = st.all || st.open.has(u.id);
+    const pretty = !!u._pretty && st.pretty.has(u.id);
+    const lc = LAYER_COLORS[u.layer] || "#888", sc = SEV_COLORS[u.severity] || "#9AA3B2";
+    return `<article class="uc${open ? " open" : ""}" id="${esc(u.id)}" data-id="${esc(u.id)}">
+      <span class="dot" style="background:${lc}" title="${esc(u.layer)}"></span>
+      <div class="body">
+        <div class="meta"><span class="uid">${esc(u.id)}</span> · ${esc(u.category)}<span class="sev-inline" style="color:${sc}"> · ${esc(u.severity)}</span></div>
+        <h3 class="title"><button class="tgl" type="button" data-act="toggle" aria-expanded="${open}" aria-controls="d-${esc(u.id)}">${esc(u.name)}</button></h3>
+        <p class="desc">${esc(u.description)}</p>
+        ${u.mappings.length ? `<div class="badges">${u.mappings.map(badge).join("")}</div>` : ""}
+        <div class="ls"><span class="ls-k">Log sources:</span> ${u.log_sources.map(esc).join(", ")}</div>
+        <button class="open-tgl" type="button" data-act="toggle" aria-expanded="${open}" aria-controls="d-${esc(u.id)}"><span class="chev" aria-hidden="true">▸</span> sample log &amp; detection logic</button>
+        <div class="details" id="d-${esc(u.id)}"${open ? "" : " hidden"}>
+          <div class="d-block"><div class="d-k">Detection logic</div><p>${esc(u.detection)}</p></div>
+          <div class="d-block">
+            <div class="d-head"><span class="d-k">Sample log</span><span class="d-actions">${u._pretty ? `<button class="mini" type="button" data-act="pretty" aria-pressed="${pretty}" title="Toggle formatted JSON (copy always copies the raw log)">pretty</button>` : ""}<button class="mini" type="button" data-act="copy">copy log</button><button class="mini" type="button" data-act="link">copy link</button></span></div>
+            <pre class="log"><code>${esc(pretty ? u._pretty : u.sample_log)}</code></pre>
+          </div>
+        </div>
+      </div>
+      <div class="sev" style="color:${sc}"><i style="background:${sc}"></i>${esc(u.severity)}</div>
+    </article>`;
+  }
+  function render() {
+    const rows = filtered();
+    const page = rows.slice(0, st.shown);
+    $("#list").innerHTML = page.length ? page.map(card).join("") :
+      `<div class="empty">No use cases match these filters.</div>`;
+    const active = st.cat !== "ALL" || st.q || st.sev || st.fw;
+    $("#result").innerHTML = `<span><b>${fmt(rows.length)}</b> ${rows.length === 1 ? "use case matches" : "use cases match"}</span>` +
+      (active ? `<button type="button" id="reset">reset filters</button>` : "");
+    const left = rows.length - page.length;
+    $("#moreWrap").hidden = left <= 0;
+    $("#more").textContent = `load ${Math.min(PAGE, left)} more ↓`;
+    document.querySelectorAll("#tabs .tab").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.cat === st.cat)));
+  }
+  function setOpen(article, open) {
+    const id = article.dataset.id;
+    if (open) st.open.add(id); else st.open.delete(id);
+    article.classList.toggle("open", open);
+    article.querySelectorAll('[data-act="toggle"]').forEach((b) => b.setAttribute("aria-expanded", String(open)));
+    article.querySelector(".details").hidden = !open;
+  }
+
+  /* ---------- utilities ---------- */
+  async function copyText(text) {
+    try { await navigator.clipboard.writeText(text); return true; } catch (e) { /* fall back below */ }
+    const ta = document.createElement("textarea");
+    ta.value = text; ta.setAttribute("readonly", ""); ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    let ok = false; try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    ta.remove(); return ok;
+  }
+  function flash(btn, ok) {
+    const label = btn.textContent;
+    btn.textContent = ok ? "copied" : "copy failed";
+    btn.classList.toggle("ok", ok);
+    setTimeout(() => { btn.textContent = label; btn.classList.remove("ok"); }, 1400);
+  }
+  function download(name, text, type) {
+    const url = URL.createObjectURL(new Blob([text], { type }));
+    const a = document.createElement("a");
+    a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  const mapLabel = (m) => (FW[m] && FW[m].name ? `${m} ${FW[m].name}` : m);
+  function exportRows() {
+    return filtered().map((u) => ({
+      id: u.id, category: u.category, layer: u.layer, name: u.name, severity: u.severity,
+      description: u.description, log_sources: u.log_sources, detection: u.detection,
+      mappings: u.mappings.map(mapLabel), sample_log: u.sample_log
+    }));
+  }
+  function toCSV(rows) {
+    const cols = ["id", "category", "layer", "name", "severity", "description", "log_sources", "detection", "mappings", "sample_log"];
+    const cell = (v) => '"' + String(Array.isArray(v) ? v.join("; ") : v).replace(/"/g, '""') + '"';
+    return "﻿" + cols.join(",") + "\r\n" + rows.map((r) => cols.map((c) => cell(r[c])).join(",")).join("\r\n") + "\r\n";
+  }
+  function focusFromHash() {
+    const id = decodeURIComponent(location.hash.slice(1));
+    if (!ID_RE.test(id) || !UC.some((u) => u.id === id)) return false;
+    st.cat = "ALL"; st.sev = ""; st.fw = ""; st.q = id; st.shown = PAGE; st.open.add(id);
+    $("#q").value = id; $("#fSev").value = ""; $("#fFw").value = "";
+    render();
+    const el = document.getElementById(id);
+    if (el) requestAnimationFrame(() => el.scrollIntoView({ block: "start" }));
+    return true;
+  }
+
+  /* ---------- events ---------- */
+  function wire() {
+    const reset = () => { st.shown = PAGE; render(); };
+    let t = null;
+    $("#q").addEventListener("input", (e) => { clearTimeout(t); t = setTimeout(() => { st.q = e.target.value.trim(); reset(); }, 120); });
+    $("#fSev").addEventListener("change", (e) => { st.sev = e.target.value; reset(); });
+    $("#fFw").addEventListener("change", (e) => { st.fw = e.target.value; reset(); });
+    $("#tabs").addEventListener("click", (e) => { const b = e.target.closest(".tab"); if (!b) return; st.cat = b.dataset.cat; reset(); });
+    $("#coverageGrid").addEventListener("click", (e) => {
+      const b = e.target.closest(".tile"); if (!b) return;
+      st.cat = b.dataset.cat; st.q = ""; st.sev = ""; st.fw = ""; $("#q").value = ""; $("#fSev").value = ""; $("#fFw").value = "";
+      reset(); document.getElementById("browser").scrollIntoView({ block: "start" });
+    });
+    $("#result").addEventListener("click", (e) => {
+      if (e.target.id !== "reset") return;
+      st.cat = "ALL"; st.q = ""; st.sev = ""; st.fw = ""; $("#q").value = ""; $("#fSev").value = ""; $("#fFw").value = "";
+      if (ID_RE.test(location.hash.slice(1))) history.replaceState(null, "", location.pathname + location.search);
+      reset();
+    });
+    $("#more").addEventListener("click", () => { st.shown += PAGE; render(); });
+    $("#btnExpand").addEventListener("click", (e) => {
+      st.all = !st.all; if (!st.all) st.open.clear();
+      e.currentTarget.setAttribute("aria-pressed", String(st.all));
+      e.currentTarget.textContent = st.all ? "collapse all" : "expand all";
+      render();
+    });
+    $("#btnCsv").addEventListener("click", () => download("ai-datacenter-siem-usecases.csv", toCSV(exportRows()), "text/csv;charset=utf-8"));
+    $("#btnJson").addEventListener("click", () => download("ai-datacenter-siem-usecases.json", JSON.stringify(exportRows(), null, 2), "application/json"));
+    $("#list").addEventListener("click", async (e) => {
+      const btn = e.target.closest("button[data-act]"); if (!btn) return;
+      const art = btn.closest(".uc"); if (!art) return;
+      const u = UC.find((x) => x.id === art.dataset.id); if (!u) return;
+      const act = btn.dataset.act;
+      if (act === "toggle") setOpen(art, art.querySelector(".details").hidden);
+      else if (act === "pretty") {
+        const on = !st.pretty.has(u.id);
+        if (on) st.pretty.add(u.id); else st.pretty.delete(u.id);
+        btn.setAttribute("aria-pressed", String(on));
+        art.querySelector("pre.log code").textContent = on ? u._pretty : u.sample_log;
+      }
+      else if (act === "copy") flash(btn, await copyText(u.sample_log));
+      else if (act === "link") flash(btn, await copyText(location.origin + location.pathname + "#" + u.id));
+    });
+    window.addEventListener("hashchange", focusFromHash);
+  }
+
+  /* ---------- boot ---------- */
+  function init(db) {
+    DB = db; FW = db.frameworks || {};
+    UC = db.usecases.map((u) => Object.assign({}, u, {
+      _pretty: prettyLog(u.sample_log),
+      _hay: [u.id, u.name, u.category, u.layer, u.severity, u.description, u.detection, u.sample_log,
+        u.log_sources.join(" "), u.mappings.map(mapLabel).join(" ")].join(" \u0001 ").toLowerCase()
+    }));
+    renderStats(); renderBars(); renderCoverage(); renderTabs(); renderSelects(); wire();
+    if (!focusFromHash()) render();
+  }
+  fetch("usecases.json", { cache: "no-cache" })
+    .then((r) => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+    .then(init)
+    .catch((err) => {
+      $("#list").innerHTML = `<div class="empty">Could not load usecases.json (${esc(err.message)}).<br>Serve the folder over HTTP, for example <code>python3 -m http.server</code>, instead of opening the file directly.</div>`;
+    });
+})();
+</script>
+</body>
+</html>

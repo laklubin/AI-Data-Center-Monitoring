@@ -1,0 +1,135 @@
+category: Data Protection
+code: DAT
+layer: Data & Operations
+scope: DLP, object storage, databases, encryption, KMS / HSM, secrets vaults
+usecases:
+
+  - id: DAT-001
+    name: Bulk download of checkpoints or datasets from object storage
+    severity: High
+    description: >-
+      Checkpoint and dataset buckets are the crown jewels of a training cluster. Large GetObject volume by an
+      evaluation or service key, or by a user from a workstation, is the classic theft pattern.
+    log_sources:
+      - Object storage audit logs (MinIO, Ceph RGW, S3 server access logs)
+      - AWS CloudTrail S3 data events
+    detection: >-
+      More than 100 GB or more than 500 objects read from checkpoint/dataset buckets by one access key in 1 hour,
+      reads from client IPs outside training subnets, or tooling user agents (rclone, s5cmd, aws-cli) on service keys
+      that normally use SDKs.
+    mappings: [T1530, AML.T0035]
+    sample_log: |
+      {"version":"1","deploymentid":"7a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d","time":"2026-11-12T18:20:41.118Z","trigger":"incoming","api":{"name":"GetObject","bucket":"checkpoints","object":"llm-70b/step-120000/model-00001-of-00030.safetensors","status":"OK","statusCode":200,"rx":412,"tx":4932012231,"timeToResponse":"38211041533ns"},"remotehost":"10.88.4.201","requestID":"1879A1B2C3D4E5F6","userAgent":"rclone/v1.68.1","accessKey":"svc-eval"}
+
+  - id: DAT-002
+    name: Dataset or model bucket made public
+    severity: High
+    description: >-
+      A bucket policy with Principal "*" or a removed public access block exposes training data and weights to the
+      internet. Researchers sometimes do it to share an eval set without realizing what else is in the bucket.
+    log_sources:
+      - AWS CloudTrail (PutBucketPolicy, PutBucketAcl, DeletePublicAccessBlock)
+      - Object storage admin audit logs
+    detection: >-
+      Bucket policy or ACL changes granting access to "*", AllUsers or AuthenticatedUsers, or removal of public
+      access blocks, on buckets tagged data-class confidential or model-artifacts.
+    mappings: [T1530]
+    sample_log: |
+      {"eventVersion":"1.10","userIdentity":{"type":"AssumedRole","principalId":"AROAEXAMPLEID:jsmith","arn":"arn:aws:sts::111122223333:assumed-role/ml-researcher/jsmith","accountId":"111122223333"},"eventTime":"2026-11-12T18:41:02Z","eventSource":"s3.amazonaws.com","eventName":"PutBucketPolicy","awsRegion":"us-east-1","sourceIPAddress":"198.51.100.14","userAgent":"[aws-cli/2.17.40 Python/3.11.9 Linux/6.8.0 exe/x86_64.ubuntu.24]","requestParameters":{"bucketName":"ai-eval-datasets","bucketPolicy":{"Version":"2012-10-17","Statement":[{"Sid":"share","Effect":"Allow","Principal":"*","Action":"s3:GetObject","Resource":"arn:aws:s3:::ai-eval-datasets/*"}]},"policy":""},"responseElements":null,"eventID":"b1c2d3e4-f5a6-4b7c-8d9e-0f1a2b3c4d5e","readOnly":false,"eventType":"AwsApiCall","recipientAccountId":"111122223333"}
+
+  - id: DAT-003
+    name: Encryption key disabled or scheduled for deletion
+    severity: Critical
+    description: >-
+      Disabling or deleting the KMS keys that protect checkpoint, dataset and backup storage makes the data
+      unreadable (crypto-shredding). It is a fast route to destruction or extortion.
+    log_sources:
+      - AWS CloudTrail / Azure Key Vault / GCP KMS audit logs
+      - HashiCorp Vault audit (transit keys)
+    detection: >-
+      ScheduleKeyDeletion, DisableKey or key-policy changes that remove the data owner's access, on keys tagged for
+      model, dataset or backup storage. Always alert, and page if outside a change window.
+    mappings: [T1485]
+    sample_log: |
+      {"eventVersion":"1.10","userIdentity":{"type":"AssumedRole","arn":"arn:aws:sts::111122223333:assumed-role/platform-admin/d.ivanov","accountId":"111122223333"},"eventTime":"2026-11-12T19:03:37Z","eventSource":"kms.amazonaws.com","eventName":"ScheduleKeyDeletion","awsRegion":"us-east-1","sourceIPAddress":"203.0.113.77","userAgent":"aws-cli/2.17.40","requestParameters":{"keyId":"arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab","pendingWindowInDays":7},"responseElements":{"keyId":"arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab","keyState":"PendingDeletion","pendingWindowInDays":7},"readOnly":false,"eventType":"AwsApiCall","recipientAccountId":"111122223333"}
+
+  - id: DAT-004
+    name: HSM login failures followed by key export (model-signing keys)
+    severity: Critical
+    description: >-
+      Model- and release-signing keys in HSMs anchor the supply chain. Guessing the crypto-officer PIN and then
+      wrapping (exporting) a signing key lets an attacker sign malicious models that pass verification.
+    log_sources:
+      - HSM audit logs (Thales Luna, Entrust nShield, cloud HSM)
+    detection: >-
+      3 or more CKR_PIN_INCORRECT results for a partition in 10 minutes, any C_WrapKey or key export of signing keys,
+      or partition policy changes, outside a key ceremony.
+    mappings: [T1552.004, T1110.001]
+    sample_log: |
+      2026-11-12 19:22:01 hsm-luna-01 audit: session=0x2c1 op=C_Login user=CO partition=model-signing client=10.20.31.144 app=pkcs11-tool result=CKR_PIN_INCORRECT
+      2026-11-12 19:22:09 hsm-luna-01 audit: session=0x2c2 op=C_Login user=CO partition=model-signing client=10.20.31.144 app=pkcs11-tool result=CKR_PIN_INCORRECT
+      2026-11-12 19:22:31 hsm-luna-01 audit: session=0x2c3 op=C_WrapKey user=CO partition=model-signing key_label=release-signing-2026 wrapping_key=tmp-wrap-01 client=10.20.31.144 result=CKR_OK
+
+  - id: DAT-005
+    name: Training data or weights uploaded to an unsanctioned GenAI or cloud app
+    severity: High
+    description: >-
+      Engineers paste or upload proprietary datasets, eval sets and model files into public AI tools or personal
+      storage. DLP and CASB see the upload even when the destination is HTTPS.
+    log_sources:
+      - DLP / CASB / SSE logs (Netskope, Zscaler, Microsoft Purview)
+    detection: >-
+      DLP matches for training-data or model-weight profiles (.safetensors, .ckpt, .pt, tokenizer files, labeled
+      dataset formats) uploaded to unsanctioned GenAI or personal cloud instances, blocked or not.
+    mappings: [T1567]
+    sample_log: |
+      {"timestamp":"2026-11-12T19:40:12Z","type":"nspolicy","alert_type":"DLP","user":"jsmith@corp.example","app":"Unsanctioned GenAI chat","appcategory":"Generative AI","activity":"Upload","file_name":"tokenizer_and_eval_set.zip","file_type":"application/zip","file_size":734003200,"dlp_profile":"AI Training Data - Confidential","dlp_rule":"Model weights / dataset file types","action":"block","src_ip":"10.20.44.118","site":"chat.genai-tool.example","instance_id":"personal"}
+
+  - id: DAT-006
+    name: Full-table export from a feature store or customer database
+    severity: High
+    description: >-
+      COPY ... TO STDOUT or SELECT * without filters on feature stores and customer tables is how an insider or
+      intruder pulls an entire dataset through a legitimate service account.
+    log_sources:
+      - Database audit logs (pgaudit, MySQL audit, Snowflake access history)
+    detection: >-
+      COPY TO or unbounded SELECT on tables tagged PII or training-data, result sets above 1M rows, or service accounts
+      running ad-hoc exports from interactive clients.
+    mappings: [T1213]
+    sample_log: |
+      2026-11-12 20:01:22.118 UTC [88412] svc_feature_rw@featurestore LOG:  AUDIT: SESSION,1,1,READ,SELECT,,,"COPY (SELECT * FROM customer_features) TO STDOUT WITH CSV",<not logged>
+      2026-11-12 20:04:51.902 UTC [88412] svc_feature_rw@featurestore LOG:  duration: 209784.112 ms  statement: COPY (SELECT * FROM customer_features) TO STDOUT WITH CSV
+
+  - id: DAT-007
+    name: Secrets vault audit device disabled or root token generated
+    severity: Critical
+    description: >-
+      Disabling Vault audit devices blinds every secret access that follows, and generating a root token bypasses all
+      policies. Together they are the usual setup for silently draining a secrets vault.
+    log_sources:
+      - HashiCorp Vault audit logs
+      - Vault server operational logs
+    detection: >-
+      Requests to delete or disable sys/audit/*, any sys/generate-root attempt, or seal and unseal operations outside
+      a declared ceremony.
+    mappings: [T1562.001, T1555.006]
+    sample_log: |
+      {"time":"2026-11-12T20:22:31.118Z","type":"request","auth":{"display_name":"oidc-d.ivanov","policies":["default","vault-admin"],"token_type":"service"},"request":{"id":"5f4e3d2c-1b0a-4f9e-8d7c-6b5a4f3e2d1c","operation":"delete","mount_type":"system","path":"sys/audit/file","remote_address":"10.20.9.14","namespace":{"id":"root"}}}
+      {"time":"2026-11-12T20:24:02.551Z","type":"request","request":{"id":"6a5b4c3d-2e1f-4a0b-9c8d-7e6f5a4b3c2d","operation":"update","mount_type":"system","path":"sys/generate-root/attempt","remote_address":"10.20.9.14"}}
+
+  - id: DAT-008
+    name: Sync tool copying data from training nodes to unsanctioned storage
+    severity: High
+    description: >-
+      rclone, s5cmd and similar tools move terabytes efficiently to any S3-compatible endpoint. Seeing them on
+      training or storage hosts, pointed at destinations outside the approved list, usually means exfiltration.
+    log_sources:
+      - Web proxy logs
+      - EDR process telemetry
+    detection: >-
+      Proxy sessions with rclone, s5cmd or restic user agents, or more than 10 GB uploaded, from training or storage
+      hosts to destinations outside the approved storage endpoints.
+    mappings: [T1567.002]
+    sample_log: |
+      1794515702.118 48211 10.60.2.41 TCP_TUNNEL/200 9831220144 CONNECT objectstore.example.net:443 svc-train HIER_DIRECT/198.51.100.200 - "rclone/v1.68.1"

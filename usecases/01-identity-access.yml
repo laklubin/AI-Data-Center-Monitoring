@@ -1,0 +1,249 @@
+category: Identity & Access
+code: IAM
+layer: Identity & Perimeter
+scope: Active Directory, Entra ID, LDAP, SSO, MFA, PAM, service accounts, workload identities, API keys
+usecases:
+
+  - id: IAM-001
+    name: Password spray against SSO from a single source
+    severity: High
+    description: >-
+      Low-and-slow password guessing across many researcher and operator accounts, kept under lockout thresholds.
+      One hit gives the attacker the SSO session in front of the GPU cluster portal, Slurm and MLOps tools.
+    log_sources:
+      - Microsoft Entra ID sign-in logs
+      - Okta System Log
+      - AD FS / IdP authentication logs
+    detection: >-
+      From one source IP or ASN, 15 or more distinct users fail with an invalid-password result (Entra 50126) within
+      30 minutes, at 3 or fewer attempts per user. Raise to Critical if any of those users then signs in successfully
+      from the same IP within 60 minutes.
+    mappings: [T1110.003, T1078.004]
+    sample_log: |
+      {"createdDateTime":"2026-11-12T03:14:07Z","userPrincipalName":"m.chen@corp.example","appDisplayName":"GPU Cluster Portal","ipAddress":"203.0.113.45","clientAppUsed":"Browser","status":{"errorCode":50126,"failureReason":"Error validating credentials due to invalid username or password."},"location":{"city":"Amsterdam","countryOrRegion":"NL"},"riskLevelDuringSignIn":"medium","conditionalAccessStatus":"notApplied","correlationId":"6b2f1c9e-3a1d-4f2b-9c7e-1d2e3f4a5b6c"}
+
+  - id: IAM-002
+    name: MFA fatigue (push bombing) followed by approval
+    severity: High
+    description: >-
+      An attacker who already has the password floods the user with push prompts until one is approved. This is a
+      common way into GPU cloud admin consoles and AI platform tenants.
+    log_sources:
+      - Okta System Log
+      - Microsoft Entra ID sign-in logs
+      - Duo authentication logs
+    detection: >-
+      5 or more push challenges for one user within 10 minutes with 3 or more denials (user.mfa.okta_verify.deny_push),
+      or a push approval that follows a burst of denials or comes from a new country or device.
+    mappings: [T1621, T1078.004]
+    sample_log: |
+      {"uuid":"8f3c2a10-87e1-11f1-9a2b-0b5d4c1e2f3a","published":"2026-11-12T22:41:09.512Z","eventType":"user.mfa.okta_verify.deny_push","displayMessage":"User rejected Okta push verify","severity":"WARN","actor":{"type":"User","alternateId":"r.patel@corp.example","displayName":"Ravi Patel"},"client":{"ipAddress":"198.51.100.23","geographicalContext":{"country":"Romania","city":"Bucharest"},"userAgent":{"rawUserAgent":"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"}},"outcome":{"result":"FAILURE","reason":"User rejected Okta push verify"},"target":[{"type":"AppInstance","displayName":"GPU Cloud Admin Console"}]}
+
+  - id: IAM-003
+    name: Kerberoasting of HPC and ML service accounts
+    severity: High
+    description: >-
+      RC4 service tickets requested for many SPNs let an attacker crack service-account passwords offline. In AI data
+      centers these accounts often run Slurm, storage and MLOps services with broad rights.
+    log_sources:
+      - Windows Security Event Log on domain controllers (4769)
+    detection: >-
+      One account requests TGS tickets for 10 or more distinct SPNs within 5 minutes with TicketEncryptionType 0x17
+      (RC4-HMAC), excluding krbtgt and computer accounts ending in $. Raise severity when the SPN belongs to a Tier-0
+      or GPU-platform service account.
+    mappings: [T1558.003]
+    sample_log: |
+      2026-11-12T09:02:51.331Z DC02.corp.example Microsoft-Windows-Security-Auditing EventID=4769 Keywords="Audit Success" TargetUserName=a.kowalski@CORP.EXAMPLE ServiceName=svc-slurmdbd ServiceSid=S-1-5-21-3623811015-3361044348-30300820-1622 TicketOptions=0x40810000 TicketEncryptionType=0x17 IpAddress=::ffff:10.20.31.144 IpPort=50122 Status=0x0
+
+  - id: IAM-004
+    name: DCSync replication request from a non-domain controller
+    severity: Critical
+    description: >-
+      A host that is not a domain controller requesting directory replication can pull every password hash, krbtgt
+      included. That means control of the AD forest that gates cluster, storage and BMC access.
+    log_sources:
+      - Windows Security Event Log on domain controllers (4662)
+      - Microsoft Defender for Identity
+    detection: >-
+      Event 4662 whose Properties contain DS-Replication-Get-Changes-All {1131f6ad-9c07-11d1-f79f-00c04fc2dcd2} or
+      DS-Replication-Get-Changes {1131f6aa-9c07-11d1-f79f-00c04fc2dcd2}, where SubjectUserName is not a domain
+      controller computer account or the approved directory-sync account.
+    mappings: [T1003.006]
+    sample_log: |
+      2026-11-12T01:17:44.902Z DC01.corp.example Microsoft-Windows-Security-Auditing EventID=4662 Keywords="Audit Success" SubjectUserName=svc-backup SubjectDomainName=CORP SubjectLogonId=0x3E7A21C ObjectServer=DS ObjectType=%{19195a5b-6da0-11d0-afd3-00c04fd930c9} ObjectName=%{6c3f2a1b-8d4e-4f5a-9b6c-7d8e9f0a1b2c} OperationType="Object Access" AccessMask=0x100 Properties="%%7688 {1131f6ad-9c07-11d1-f79f-00c04fc2dcd2} {19195a5b-6da0-11d0-afd3-00c04fd930c9}"
+
+  - id: IAM-005
+    name: Member added to GPU platform or Tier-0 admin group
+    severity: High
+    description: >-
+      Membership in Domain Admins, GPU-Cluster-Admins or k8s-cluster-admins gives control of the cluster, its schedulers,
+      and the model and data stores behind them.
+    log_sources:
+      - Windows Security Event Log (4728, 4732, 4756)
+      - Microsoft Entra ID audit logs
+    detection: >-
+      Membership added to a group tagged Tier-0 or GPU-platform-admin outside an approved change window, or by an
+      account that is not on the identity-provisioning allow-list.
+    mappings: [T1098.007]
+    sample_log: |
+      2026-11-12T14:33:10.118Z DC01.corp.example Microsoft-Windows-Security-Auditing EventID=4728 Keywords="Audit Success" Message="A member was added to a security-enabled global group." SubjectUserName=t.nguyen-adm MemberName="CN=Lee Wong,OU=Research,DC=corp,DC=example" TargetUserName=GPU-Cluster-Admins TargetDomainName=CORP TargetSid=S-1-5-21-3623811015-3361044348-30300820-4101
+
+  - id: IAM-006
+    name: Root SSH to a GPU node that bypasses the PAM bastion
+    severity: High
+    description: >-
+      Privileged access to GPU nodes should go through the PAM jump host with session recording. A direct root login
+      points to a stolen key, a misconfiguration, or someone avoiding oversight.
+    log_sources:
+      - Linux sshd and PAM logs (auth.log / journald)
+      - PAM session logs (CyberArk PSM, Teleport, BeyondTrust)
+    detection: >-
+      sshd "Accepted" for root or break-glass accounts where the source IP is outside the bastion CIDR, or a
+      successful login with no matching PAM session start within 2 minutes.
+    mappings: [T1021.004, T1078.003]
+    sample_log: |
+      Nov 12 02:47:31 dgx-b200-r07-n03 sshd[418827]: Accepted publickey for root from 10.40.12.88 port 53314 ssh2: ED25519 SHA256:q1V3nYkz8m0cPq0Ew1ZsS1o9pXkB4l8r2Jf7dTqvH2c
+      Nov 12 02:47:31 dgx-b200-r07-n03 sshd[418827]: pam_unix(sshd:session): session opened for user root(uid=0) by (uid=0)
+
+  - id: IAM-007
+    name: Service account used for interactive logon
+    severity: Medium
+    description: >-
+      Service accounts for Slurm, MLflow, storage or CI should only authenticate non-interactively from known hosts.
+      An RDP, console or TTY session usually means someone is using stolen service credentials.
+    log_sources:
+      - Windows Security Event Log (4624)
+      - Linux sshd / sudo logs
+    detection: >-
+      Accounts that match service naming (svc-*, sa-*) logging on with LogonType 2, 10 or 11, or getting an
+      interactive TTY on Linux. Baseline the expected source hosts for each service account and alert on new ones.
+    mappings: [T1078.002]
+    sample_log: |
+      2026-11-12T19:05:42.553Z JMP-ADM-02.corp.example Microsoft-Windows-Security-Auditing EventID=4624 Keywords="Audit Success" TargetUserName=svc-mlflow TargetDomainName=CORP LogonType=10 LogonProcessName=User32 AuthenticationPackageName=Negotiate WorkstationName=LT-RSRCH-118 IpAddress=10.20.44.118 IpPort=0 ElevatedToken=%%1842
+
+  - id: IAM-008
+    name: Workload identity sign-in from an unfamiliar network
+    severity: High
+    description: >-
+      Service principals that autoscale GPU capacity or read model stores run from fixed egress IPs. A sign-in from
+      somewhere new usually means a leaked client secret or certificate.
+    log_sources:
+      - Microsoft Entra ID service principal sign-in logs
+      - AWS CloudTrail (AssumeRoleWithWebIdentity)
+      - GCP Cloud Audit Logs (STS token exchange)
+    detection: >-
+      Service principal authentication from an IP or ASN not seen in the last 30 days, or from outside the data-center
+      and CI egress ranges. Critical if the principal holds Owner or Contributor on GPU subscriptions or can read Key Vault.
+    mappings: [T1078.004, T1550.001]
+    sample_log: |
+      {"TimeGenerated":"2026-11-12T05:21:33Z","ServicePrincipalName":"sp-gpu-autoscaler","ServicePrincipalId":"5f2d9a71-0c3e-4b8a-a1d2-7e9f0b1c2d3e","AppId":"c0ffee00-1234-4cde-8f00-abcdef012345","IPAddress":"192.0.2.77","Location":"SG","ResourceDisplayName":"Azure Resource Manager","ResultType":"0","ClientCredentialType":"clientSecret","ServicePrincipalCredentialKeyId":"8a7b6c5d-4e3f-2a1b-0c9d-8e7f6a5b4c3d"}
+
+  - id: IAM-009
+    name: Long-lived API key used from a new network or anonymizer
+    severity: High
+    description: >-
+      API keys for inference endpoints, NGC, Hugging Face and internal model registries tend to end up in notebooks
+      and repos. Use from a new ASN, a Tor exit or a hosting provider points to a leaked key.
+    log_sources:
+      - API gateway access logs (Kong, Apigee, Envoy)
+      - GitHub secret scanning alerts
+    detection: >-
+      Requests authenticated with a key ID from an IP or ASN outside its 30-day baseline, or from IPs that threat intel
+      flags as Tor or VPN exits. Correlate with secret-scanning alerts for the same key and with keys older than 90 days.
+    mappings: [T1550.001, T1552.001]
+    sample_log: |
+      {"started_at":1794457297000,"client_ip":"203.0.113.199","request":{"method":"POST","uri":"/v1/chat/completions","headers":{"user-agent":"python-requests/2.32.3"}},"response":{"status":200},"consumer":{"username":"team-search-prod"},"authenticated_entity":{"id":"key-7f3a9c"},"service":{"name":"llm-inference"},"latencies":{"request":842},"enrichment":{"asn":"AS64496","threat_intel":["tor_exit"],"key_first_seen_asn":false}}
+
+  - id: IAM-010
+    name: Federation or identity provider trust modified
+    severity: Critical
+    description: >-
+      Changing domain federation settings or adding a new identity provider lets an attacker mint tokens for any user
+      (Golden SAML style) and skip MFA on every federated app.
+    log_sources:
+      - Microsoft Entra ID audit logs
+      - Okta System Log (IdP lifecycle events)
+    detection: >-
+      Audit events "Set federation settings on domain", "Set domain authentication", or a new IdP or token-signing
+      certificate, outside an approved change. Always investigate the initiating identity and its source IP.
+    mappings: [T1484.002, T1606.002]
+    sample_log: |
+      {"activityDateTime":"2026-11-12T23:58:02Z","activityDisplayName":"Set federation settings on domain","category":"DirectoryManagement","result":"success","loggedByService":"Core Directory","initiatedBy":{"user":{"userPrincipalName":"it-admin07@corp.example","ipAddress":"198.51.100.61"}},"targetResources":[{"type":"Domain","displayName":"research.corp.example","modifiedProperties":[{"displayName":"IssuerUri","oldValue":"\"http://adfs.corp.example/adfs/services/trust\"","newValue":"\"http://sts.idp-sync.example.net/adfs/services/trust\""}]}]}
+
+  - id: IAM-011
+    name: LDAP reconnaissance burst from a workstation
+    severity: Medium
+    description: >-
+      Collectors such as SharpHound pull users, groups, SPNs and ACLs to map attack paths toward cluster admins.
+    log_sources:
+      - Active Directory Directory Service log (1644 expensive-search logging)
+      - Microsoft Defender for Identity
+    detection: >-
+      One client issues 500 or more LDAP searches in 5 minutes, or domain-wide searches for servicePrincipalName=*,
+      adminCount=1 or (objectClass=*), from a host that is not an admin or identity-management server.
+    mappings: [T1087.002, T1069.002]
+    sample_log: |
+      2026-11-12T10:12:09.004Z DC02.corp.example Microsoft-Windows-ActiveDirectory_DomainService EventID=1644 Category="Field Engineering" Client=10.20.31.144:53012 StartingNode="DC=corp,DC=example" Filter="( & (objectCategory=person) (servicePrincipalName=*) )" SearchScope=subtree AttributeSelection="samaccountname,serviceprincipalname,admincount" EntriesVisited=48211 EntriesReturned=412 User=CORP\a.kowalski
+
+  - id: IAM-012
+    name: Emergency (break-glass) account sign-in
+    severity: Critical
+    description: >-
+      Break-glass accounts skip normal controls and should almost never be used. Every sign-in needs to match a
+      declared incident.
+    log_sources:
+      - Microsoft Entra ID sign-in logs
+      - PAM vault audit logs
+    detection: >-
+      Any successful or failed sign-in by an account on the break-glass watchlist. Critical when no incident or change
+      ticket is open, or when the sign-in comes from outside the documented recovery workstations.
+    mappings: [T1078.004]
+    sample_log: |
+      {"createdDateTime":"2026-11-12T16:40:12Z","userPrincipalName":"bg-admin01@corp.onmicrosoft.com","appDisplayName":"Azure Portal","ipAddress":"203.0.113.200","status":{"errorCode":0},"conditionalAccessStatus":"notApplied","authenticationRequirement":"multiFactorAuthentication","authenticationDetails":[{"authenticationMethod":"FIDO2 security key","succeeded":true}],"location":{"countryOrRegion":"US","city":"Ashburn"}}
+
+  - id: IAM-013
+    name: Privileged credential checkout spike or checkout without a ticket
+    severity: High
+    description: >-
+      Pulling many root, BMC, switch or HSM credentials from the vault in a short window, or with no ticket, often
+      comes before a hands-on-keyboard intrusion or insider sabotage.
+    log_sources:
+      - CyberArk Vault audit (syslog CEF)
+      - Delinea Secret Server / HashiCorp Vault audit
+    detection: >-
+      One user retrieves 10 or more privileged accounts in 1 hour, or retrieves BMC, InfiniBand/NVSwitch or HSM
+      credentials with an empty reason or no matching change ticket.
+    mappings: [T1555]
+    sample_log: |
+      Nov 12 03:05:18 vault01 CEF:0|Cyber-Ark|Vault|14.2.0000|295|Retrieve password|5|act=Retrieve password suser=l.wong fname=Root\\Operating System-Redfish-dgx-b200-r07-n03-bmc-admin dvc=10.10.5.20 shost=10.20.44.118 dhost=dgx-b200-r07-n03-bmc duser=admin reason= cs2Label="Safe Name" cs2=GPU-BMC-Credentials cs3Label="Device Type" cs3=Operating System
+
+  - id: IAM-014
+    name: Conditional Access or sign-on policy disabled or weakened
+    severity: High
+    description: >-
+      Switching off the policies that enforce MFA, compliant devices or location limits for GPU platform admins opens
+      the door to token replay and password-only access.
+    log_sources:
+      - Microsoft Entra ID audit logs
+      - Okta System Log (policy lifecycle and rule events)
+    detection: >-
+      A Conditional Access policy deleted, set to disabled or report-only, or given new user or app exclusions,
+      especially policies scoped to admin roles, GPU subscriptions or "All users".
+    mappings: [T1556.009]
+    sample_log: |
+      {"activityDateTime":"2026-11-12T21:12:44Z","activityDisplayName":"Update conditional access policy","category":"Policy","result":"success","loggedByService":"Conditional Access","initiatedBy":{"user":{"userPrincipalName":"t.nguyen-adm@corp.example","ipAddress":"10.20.9.14"}},"targetResources":[{"type":"Policy","displayName":"CA001 - Require MFA for GPU platform admins","modifiedProperties":[{"displayName":"ConditionalAccessPolicy","oldValue":"{\"state\":\"enabled\"}","newValue":"{\"state\":\"disabled\"}"}]}]}
+
+  - id: IAM-015
+    name: New secret or certificate added to an app registration
+    severity: High
+    description: >-
+      Adding credentials to an existing app registration keeps the attacker in with that app's permissions (for
+      example GPU subscription contributor or storage reader), even after every user password is reset.
+    log_sources:
+      - Microsoft Entra ID audit logs
+    detection: >-
+      "Add service principal credentials" or "Update application – Certificates and secrets management" where the
+      actor is not an app owner or the CI pipeline identity, or the app holds high-privilege roles.
+    mappings: [T1098.001]
+    sample_log: |
+      {"activityDateTime":"2026-11-12T04:02:19Z","activityDisplayName":"Update application – Certificates and secrets management","category":"ApplicationManagement","result":"success","initiatedBy":{"user":{"userPrincipalName":"d.ivanov@corp.example","ipAddress":"198.51.100.14"}},"targetResources":[{"type":"Application","displayName":"gpu-capacity-orchestrator","modifiedProperties":[{"displayName":"KeyDescription","newValue":"[\"[KeyIdentifier=3f1c9a2e-7b4d-4c8e-a1f0-9d2b6e5c4a31,KeyType=Password,KeyUsage=Verify,DisplayName=backup-key]\"]"}]}]}

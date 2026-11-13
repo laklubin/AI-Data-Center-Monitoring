@@ -1,0 +1,133 @@
+category: Application Security
+code: APP
+layer: Identity & Perimeter
+scope: WAF, API gateway, reverse proxy, load balancers, bot protection, DDoS protection
+usecases:
+
+  - id: APP-001
+    name: WAF injection attempts followed by a successful response
+    severity: High
+    description: >-
+      Scanners hammer AI portals, model catalogs and MLOps UIs with SQLi, RCE and path-traversal payloads. A run of
+      blocks that ends in a 200 on the same path often means the attacker found a bypass.
+    log_sources:
+      - WAF logs (AWS WAF, Cloudflare, F5 Advanced WAF, ModSecurity)
+    detection: >-
+      20 or more blocked requests from one client within 10 minutes followed by an allowed 2xx from the same client to
+      the same URI path, or any request with a known scanner user agent (sqlmap, nuclei, ffuf) reaching an origin.
+    mappings: [T1190, T1595.002]
+    sample_log: |
+      {"timestamp":1794474902000,"formatVersion":1,"webaclId":"arn:aws:wafv2:us-east-1:111122223333:regional/webacl/ai-portal-acl/3f2a9c1e-7b4d-4c8e-a1f0-9d2b6e5c4a31","terminatingRuleId":"AWS-AWSManagedRulesSQLiRuleSet","terminatingRuleType":"MANAGED_RULE_GROUP","action":"BLOCK","terminatingRuleMatchDetails":[{"conditionType":"SQL_INJECTION","location":"QUERY_STRING","matchedData":["UNION","SELECT"]}],"httpSourceName":"ALB","httpSourceId":"111122223333-app/ai-portal-alb/50dc6c495c0c9188","ruleGroupList":[],"rateBasedRuleList":[],"nonTerminatingMatchingRules":[],"httpRequest":{"clientIp":"203.0.113.91","country":"BR","headers":[{"name":"Host","value":"portal.ai.corp.example"},{"name":"User-Agent","value":"sqlmap/1.8.11#stable (https://sqlmap.org)"}],"uri":"/api/v1/projects","args":"id=1%20UNION%20SELECT%20username,password%20FROM%20users--","httpVersion":"HTTP/1.1","httpMethod":"GET","requestId":"1-6733a1b2-0f1e2d3c4b5a69788796a5b4"}}
+
+  - id: APP-002
+    name: Credential stuffing against the AI portal login
+    severity: High
+    description: >-
+      Botnets replay breached username and password pairs against customer and researcher portals. A takeover hands
+      over API keys, GPU credits and private models.
+    log_sources:
+      - Bot management / CDN logs (Cloudflare, Akamai, F5 Distributed Cloud)
+      - Application authentication logs
+    detection: >-
+      On login endpoints, a failure ratio above 80% across 50 or more accounts from 20 or more IPs that share a TLS
+      fingerprint (JA4) or user agent within 15 minutes, or bot score below 30 on POST /auth/login.
+    mappings: [T1110.004]
+    sample_log: |
+      {"EdgeStartTimestamp":"2026-11-12T06:30:41Z","RayID":"8e1f2a3b4c5d6e70","ClientIP":"198.51.100.150","ClientCountry":"vn","ClientASN":64511,"ClientRequestHost":"portal.ai.corp.example","ClientRequestMethod":"POST","ClientRequestURI":"/auth/login","EdgeResponseStatus":401,"OriginResponseStatus":401,"BotScore":2,"BotScoreSrc":"Heuristics","JA4":"t13d1516h2_8daaf6152771_02713d6af862","ClientRequestUserAgent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36","SecurityAction":"log"}
+
+  - id: APP-003
+    name: Object ID enumeration against model and project APIs (BOLA)
+    severity: High
+    description: >-
+      Walking sequential project, model or dataset IDs with one token tests whether the API checks object ownership.
+      One missing check exposes other tenants' weights and data.
+    log_sources:
+      - API gateway access logs (Kong, Apigee, AWS API Gateway, Envoy)
+    detection: >-
+      One consumer or token requesting 100 or more distinct object IDs on /projects/*, /models/* or /datasets/*
+      within 10 minutes with more than 50% 403/404 responses, or with sequentially incrementing IDs.
+    mappings: ["API1:2023", T1190]
+    sample_log: |
+      {"time":"2026-11-12T08:02:11+00:00","remote_addr":"10.20.44.201","consumer":"tenant-orion","method":"GET","uri":"/v2/projects/proj-000412/models/mdl-08812/weights","status":403,"upstream":"model-registry-svc","request_time":0.012,"user_agent":"python-httpx/0.27.2","x_request_id":"b6f0c3e2a1d94f7e"}
+
+  - id: APP-004
+    name: Layer-7 flood against inference endpoints
+    severity: High
+    description: >-
+      Every LLM request holds GPU memory and batch slots. A modest request flood, or a handful of huge prompts, can
+      exhaust a serving fleet that would shrug off the same rate of ordinary web traffic.
+    log_sources:
+      - Load balancer access logs (AWS ALB, F5, NGINX, Envoy)
+      - DDoS protection / CDN logs
+      - Inference server metrics (queue depth, KV-cache usage)
+    detection: >-
+      Requests per second to /v1/completions or /v1/chat/completions above 5x the 7-day baseline with more than 20%
+      5xx, or GPU queue saturation where 80% of requests come from 5 or fewer ASNs.
+    mappings: [T1499.003, AML.T0029, "LLM10:2025"]
+    sample_log: |
+      h2 2026-11-12T09:15:02.118421Z app/llm-inference-alb/50dc6c495c0c9188 198.51.100.77:51234 10.70.3.21:8000 0.001 2.884 0.000 503 503 412 166 "POST https://api.ai.corp.example:443/v1/chat/completions HTTP/2.0" "Go-http-client/2.0" TLS_AES_128_GCM_SHA256 TLSv1.3 arn:aws:elasticloadbalancing:us-east-1:111122223333:targetgroup/vllm-tg/73e2d6bc24d8a067 "Root=1-6733a1b2-4b5a69788796a5b40f1e2d3c" "api.ai.corp.example" "session-reused" 0 2026-11-12T09:15:02.113000Z "forward" "-" "-" "10.70.3.21:8000" "503" "-" "-"
+
+  - id: APP-005
+    name: Internal-only endpoints reachable through the public ingress
+    severity: High
+    description: >-
+      Inference and MLOps services expose /metrics, /debug/pprof, model-repository and admin routes that leak
+      internals or allow control actions. They should never answer requests that arrive through the public ingress.
+    log_sources:
+      - Reverse proxy / ingress access logs (NGINX, Envoy, Traefik, HAProxy)
+    detection: >-
+      External client IPs receiving 2xx on internal path patterns (/metrics, /debug/, /v2/repository, /actuator,
+      /admin, /api/v1/status) at the public ingress, or more than 50 distinct 404 paths per client (wordlist scanning).
+    mappings: [T1190, T1595.003]
+    sample_log: |
+      203.0.113.17 - - [12/Nov/2026:10:44:03 +0000] "GET /debug/pprof/goroutine?debug=2 HTTP/1.1" 200 88213 "-" "curl/8.5.0" rt=0.004 upstream=10.70.5.14:8080 host="inference.ai.corp.example"
+      203.0.113.17 - - [12/Nov/2026:10:44:05 +0000] "POST /v2/repository/index HTTP/1.1" 200 1422 "-" "curl/8.5.0" rt=0.011 upstream=10.70.5.14:8000 host="inference.ai.corp.example"
+
+  - id: APP-006
+    name: SSRF toward cloud metadata through URL-fetching AI features
+    severity: Critical
+    description: >-
+      RAG connectors, "summarize this URL" features and agent web tools fetch attacker-chosen URLs. Pointing them at
+      169.254.169.254 or internal services steals instance credentials or maps the internal network.
+    log_sources:
+      - WAF logs (ModSecurity / OWASP CRS, AWS WAF)
+      - Application fetch-tool logs
+    detection: >-
+      Requests whose parameters or JSON bodies contain link-local, loopback or RFC 1918 targets
+      (169.254.169.254, metadata.google.internal, 127.0.0.1, 10.0.0.0/8), CRS rule 934110 hits, or fetch-tool logs
+      that resolve to internal addresses.
+    mappings: ["API7:2023", T1552.005, T1190]
+    sample_log: |
+      {"transaction":{"client_ip":"198.51.100.42","time_stamp":"Thu Nov 12 11:02:17 2026","host_ip":"10.70.4.12","request":{"method":"POST","uri":"/api/tools/fetch","headers":{"host":"assistant.ai.corp.example","content-type":"application/json"},"body":"{\"url\":\"http://169.254.169.254/latest/meta-data/iam/security-credentials/\"}"},"response":{"http_code":403},"messages":[{"message":"Possible Server Side Request Forgery (SSRF) Attack: Cloud provider metadata URL in Parameter","details":{"ruleId":"934110","file":"REQUEST-934-APPLICATION-ATTACK-GENERIC.conf","data":"Matched Data: 169.254.169.254 found within ARGS_JSON:url","severity":"2","tags":["attack-ssrf","paranoia-level/1"]}}]}}
+
+  - id: APP-007
+    name: Direct-to-origin traffic that skips the WAF or CDN
+    severity: Medium
+    description: >-
+      If the origin for portal or inference endpoints accepts traffic that did not come through the CDN or WAF, every
+      edge control (bot management, rate limits, WAF rules) can be bypassed.
+    log_sources:
+      - Origin load balancer / reverse proxy access logs
+      - Cloud VPC flow logs
+    detection: >-
+      Requests at the origin whose client IP is outside the published CDN/WAF egress ranges, or that lack the shared
+      origin-authentication header or mTLS client certificate.
+    mappings: [T1190]
+    sample_log: |
+      {"time":"2026-11-12T12:20:41Z","listener":"origin-ingress","client_ip":"192.0.2.201","x_forwarded_for":"-","host":"api.ai.corp.example","method":"POST","path":"/v1/chat/completions","status":200,"tls_client_cert":"none","origin_auth_header":"missing","cdn_range_match":false}
+
+  - id: APP-008
+    name: Forged or replayed JWTs at the API gateway
+    severity: High
+    description: >-
+      Bursts of signature failures, alg=none tokens, unknown key IDs or expired-token replays against inference APIs
+      show attempts to forge or reuse bearer tokens.
+    log_sources:
+      - API gateway / Envoy JWT authentication logs
+      - Identity provider token logs
+    detection: >-
+      20 or more JWT verification failures from one client in 5 minutes, any token with alg "none" or a kid not in
+      the JWKS, or a token jti seen from more than 3 distinct IPs.
+    mappings: [T1606, T1550.001, "API2:2023"]
+    sample_log: |
+      {"start_time":"2026-11-12T11:20:15.441Z","method":"POST","path":"/v1/chat/completions","protocol":"HTTP/2","response_code":401,"response_code_details":"jwt_authn_access_denied{Jwt_verification_fails}","downstream_remote_address":"198.51.100.33:40122","user_agent":"python-requests/2.32.3","request_id":"7c1d9e2f-4a3b-4c5d-8e6f-0a1b2c3d4e5f","route_name":"llm-api","upstream_cluster":"-","jwt":{"alg":"none","kid":null,"iss":"https://idp.corp.example","sub":"svc-batch-eval"}}

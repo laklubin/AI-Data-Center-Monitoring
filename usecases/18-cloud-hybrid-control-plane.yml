@@ -1,0 +1,152 @@
+category: Cloud & Hybrid Control Plane
+code: CLD
+layer: Platform & Pipeline
+added: true
+scope: AWS CloudTrail, Azure Activity Log, GCP Audit Logs, GuardDuty / Defender for Cloud, IaC state, cloud GPU capacity
+usecases:
+
+  - id: CLD-001
+    name: GPU instances launched in an unused region or by an unusual identity
+    severity: High
+    description: >-
+      Stolen cloud keys are routinely used to launch the biggest GPU instances in regions nobody watches, for mining or
+      for attackers' own model training, leaving a six-figure bill.
+    log_sources:
+      - AWS CloudTrail (RunInstances)
+      - Azure Activity Log / GCP Audit Logs (VM create)
+    detection: >-
+      RunInstances (or equivalent) for GPU instance families (p4d, p5, p6, ND/NC H100-class, A3) in regions with no
+      prior GPU usage, by identities that have never launched GPU capacity, or more than 4 instances at once.
+    mappings: [T1578.002, T1535, T1496.001]
+    sample_log: |
+      {"eventVersion":"1.10","userIdentity":{"type":"IAMUser","principalId":"AIDAEXAMPLEUSER01","arn":"arn:aws:iam::111122223333:user/ci-deployer","accountId":"111122223333","accessKeyId":"AKIAIOSFODNN7EXAMPLE","userName":"ci-deployer"},"eventTime":"2026-11-12T03:51:20Z","eventSource":"ec2.amazonaws.com","eventName":"RunInstances","awsRegion":"ap-southeast-3","sourceIPAddress":"198.51.100.91","userAgent":"Boto3/1.35.20 md/Botocore#1.35.20 ua/2.0 os/linux#6.8.0 md/arch#x86_64 lang/python#3.12.4","requestParameters":{"instancesSet":{"items":[{"imageId":"ami-0abcdef1234567890","minCount":8,"maxCount":8}]},"instanceType":"p5.48xlarge","monitoring":{"enabled":false},"disableApiTermination":false},"responseElements":{"requestId":"0f1e2d3c-4b5a-4968-8778-695a4b3c2d1f","reservationId":"r-0123456789abcdef0","ownerId":"111122223333"},"readOnly":false,"eventType":"AwsApiCall","managementEvent":true,"recipientAccountId":"111122223333","eventCategory":"Management"}
+
+  - id: CLD-002
+    name: GPU quota increase requested by an unusual identity
+    severity: Medium
+    description: >-
+      Attackers often ask for more GPU quota before launching capacity. A quota request from a CI identity or a new
+      region is an early warning, sometimes days before the launches.
+    log_sources:
+      - AWS CloudTrail (servicequotas RequestServiceQuotaIncrease)
+      - Azure / GCP quota change audit logs
+    detection: >-
+      Quota increase requests for GPU instance quotas (for example L-417A185B, Running On-Demand P instances) by
+      identities outside the capacity-planning team, or in regions without existing GPU footprint.
+    mappings: [T1496.001]
+    sample_log: |
+      {"eventVersion":"1.10","userIdentity":{"type":"IAMUser","arn":"arn:aws:iam::111122223333:user/ci-deployer","accountId":"111122223333","userName":"ci-deployer"},"eventTime":"2026-11-12T03:40:02Z","eventSource":"servicequotas.amazonaws.com","eventName":"RequestServiceQuotaIncrease","awsRegion":"ap-southeast-3","sourceIPAddress":"198.51.100.91","userAgent":"aws-cli/2.17.40","requestParameters":{"serviceCode":"ec2","quotaCode":"L-417A185B","desiredValue":1536.0},"responseElements":{"requestedQuota":{"id":"7f3a9c1e2b4d","serviceCode":"ec2","quotaCode":"L-417A185B","quotaName":"Running On-Demand P instances","desiredValue":1536.0,"status":"PENDING"}},"readOnly":false,"eventType":"AwsApiCall","recipientAccountId":"111122223333"}
+
+  - id: CLD-003
+    name: Cloud audit logging stopped or trail deleted
+    severity: Critical
+    description: >-
+      StopLogging, DeleteTrail or narrowing event selectors removes the record of everything that follows in the GPU
+      accounts. Legitimate reasons are rare.
+    log_sources:
+      - AWS CloudTrail
+      - Azure Activity Log (diagnostic settings delete)
+      - GCP Audit Logs (sink changes)
+    detection: >-
+      StopLogging, DeleteTrail, UpdateTrail or PutEventSelectors that reduce coverage, or deletion of Azure diagnostic
+      settings or GCP log sinks. Always alert.
+    mappings: [T1562.008]
+    sample_log: |
+      {"eventVersion":"1.10","userIdentity":{"type":"AssumedRole","arn":"arn:aws:sts::111122223333:assumed-role/OrganizationAccountAccessRole/sess-77","accountId":"111122223333"},"eventTime":"2026-11-12T04:02:44Z","eventSource":"cloudtrail.amazonaws.com","eventName":"StopLogging","awsRegion":"us-east-1","sourceIPAddress":"198.51.100.91","userAgent":"aws-cli/2.17.40","requestParameters":{"name":"arn:aws:cloudtrail:us-east-1:111122223333:trail/org-trail"},"responseElements":null,"readOnly":false,"eventType":"AwsApiCall","recipientAccountId":"111122223333"}
+
+  - id: CLD-004
+    name: Access key created for another, more privileged user
+    severity: High
+    description: >-
+      One identity creating access keys for a different, more privileged user is classic escalation and persistence
+      in cloud accounts that run GPU fleets.
+    log_sources:
+      - AWS CloudTrail (CreateAccessKey)
+      - GCP Audit Logs (serviceAccountKeys.create)
+    detection: >-
+      CreateAccessKey where requestParameters.userName differs from the caller, keys created for the root user, or
+      service-account keys created for accounts with GPU, storage or IAM admin rights.
+    mappings: [T1098.001]
+    sample_log: |
+      {"eventVersion":"1.10","userIdentity":{"type":"IAMUser","arn":"arn:aws:iam::111122223333:user/ci-deployer","accountId":"111122223333","userName":"ci-deployer"},"eventTime":"2026-11-12T03:58:10Z","eventSource":"iam.amazonaws.com","eventName":"CreateAccessKey","awsRegion":"us-east-1","sourceIPAddress":"198.51.100.91","userAgent":"aws-cli/2.17.40","requestParameters":{"userName":"gpu-fleet-admin"},"responseElements":{"accessKey":{"userName":"gpu-fleet-admin","accessKeyId":"AKIAI44QH8DHBEXAMPLE","status":"Active"}},"readOnly":false,"eventType":"AwsApiCall","recipientAccountId":"111122223333"}
+
+  - id: CLD-005
+    name: GPU instance role credentials used from outside the cloud
+    severity: Critical
+    description: >-
+      Credentials taken from instance metadata on a GPU node (through SSRF, a notebook or a malicious model) and then
+      used from an outside IP are confirmed credential theft.
+    log_sources:
+      - AWS GuardDuty findings
+      - AWS CloudTrail (instance-role sessions)
+    detection: >-
+      GuardDuty UnauthorizedAccess:IAMUser/InstanceCredentialExfiltration.OutsideAWS (or .InsideAWS), or instance-role
+      session API calls from IPs that do not belong to the instance or the VPC egress.
+    mappings: [T1552.005, T1078.004]
+    sample_log: |
+      {"schemaVersion":"2.0","accountId":"111122223333","region":"us-east-1","id":"a2c4e6f8b0d1a3c5e7f9b1d3f5a7c9e1","type":"UnauthorizedAccess:IAMUser/InstanceCredentialExfiltration.OutsideAWS","severity":8,"title":"Credentials for the EC2 instance role gpu-train-node-role were used from an external IP address.","resource":{"resourceType":"AccessKey","accessKeyDetails":{"accessKeyId":"ASIAEXAMPLEKEY000001","principalId":"AROAEXAMPLEROLE:i-0a1b2c3d4e5f67890","userName":"gpu-train-node-role","userType":"AssumedRole"}},"service":{"action":{"actionType":"AWS_API_CALL","awsApiCallAction":{"api":"ListBuckets","serviceName":"s3.amazonaws.com","remoteIpDetails":{"ipAddressV4":"203.0.113.140","country":{"countryName":"Netherlands"}}}},"count":17,"eventFirstSeen":"2026-11-12T05:12:08Z","eventLastSeen":"2026-11-12T05:40:51Z"},"createdAt":"2026-11-12T05:13:30Z","updatedAt":"2026-11-12T05:41:02Z"}
+
+  - id: CLD-006
+    name: Snapshot or machine image shared with an external account
+    severity: Critical
+    description: >-
+      Sharing an EBS snapshot or AMI from a GPU training node with another account copies its disks, including local
+      datasets, cached weights and credentials, without any network transfer to watch.
+    log_sources:
+      - AWS CloudTrail (ModifySnapshotAttribute, ModifyImageAttribute)
+      - Azure / GCP disk and image sharing audit logs
+    detection: >-
+      createVolumePermission or launchPermission added for account IDs outside the organization, or for group "all"
+      (public).
+    mappings: [T1537]
+    sample_log: |
+      {"eventVersion":"1.10","userIdentity":{"type":"AssumedRole","arn":"arn:aws:sts::111122223333:assumed-role/ml-researcher/jsmith","accountId":"111122223333"},"eventTime":"2026-11-12T06:20:33Z","eventSource":"ec2.amazonaws.com","eventName":"ModifySnapshotAttribute","awsRegion":"us-east-1","sourceIPAddress":"198.51.100.14","userAgent":"aws-cli/2.17.40","requestParameters":{"snapshotId":"snap-0123456789abcdef0","createVolumePermission":{"add":{"items":[{"userId":"444455556666"}]}},"attributeType":"CREATE_VOLUME_PERMISSION"},"responseElements":{"_return":true},"readOnly":false,"eventType":"AwsApiCall","recipientAccountId":"111122223333"}
+
+  - id: CLD-007
+    name: Owner role assigned on a GPU subscription
+    severity: High
+    description: >-
+      Owner or User Access Administrator on subscriptions that hold GPU clusters and model storage lets the assignee
+      grant themselves anything, including data-plane access to the weights.
+    log_sources:
+      - Azure Activity Log (roleAssignments/write)
+      - GCP IAM policy change audit logs
+    detection: >-
+      Role assignments of Owner (8e3af657-a8ff-443c-a75c-2fe8c4bcb635), User Access Administrator or Contributor at
+      subscription or management-group scope, outside PIM or approved automation.
+    mappings: [T1098.003]
+    sample_log: |
+      {"time":"2026-11-12T07:02:19.4412000Z","resourceId":"/SUBSCRIPTIONS/0A1B2C3D-4E5F-4A6B-8C7D-9E0F1A2B3C4D/PROVIDERS/MICROSOFT.AUTHORIZATION/ROLEASSIGNMENTS/7E6D5C4B-3A2F-4E1D-8C9B-0A1F2E3D4C5B","operationName":"MICROSOFT.AUTHORIZATION/ROLEASSIGNMENTS/WRITE","category":"Administrative","resultType":"Success","resultSignature":"Succeeded.Created","callerIpAddress":"198.51.100.14","correlationId":"a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d","identity":{"claims":{"http://schemas.xmlsoap.org/ws/2005/05/identity/claims/upn":"d.ivanov@corp.example"}},"level":"Information","properties":{"requestbody":"{\"Properties\":{\"PrincipalId\":\"5f2d9a71-0c3e-4b8a-a1d2-7e9f0b1c2d3e\",\"PrincipalType\":\"ServicePrincipal\",\"RoleDefinitionId\":\"/providers/Microsoft.Authorization/roleDefinitions/8e3af657-a8ff-443c-a75c-2fe8c4bcb635\",\"Scope\":\"/subscriptions/0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d\"}}","entity":"/subscriptions/0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d","message":"Microsoft.Authorization/roleAssignments/write"}}
+
+  - id: CLD-008
+    name: Terraform state file read by an unexpected principal
+    severity: High
+    description: >-
+      Terraform state holds plaintext outputs such as database passwords, cluster CA keys and access tokens for the
+      whole GPU platform. Only CI and the platform team should ever read it.
+    log_sources:
+      - AWS CloudTrail S3 data events
+      - Terraform Cloud / Enterprise audit trail
+    detection: >-
+      GetObject on *.tfstate keys by principals other than the CI deploy roles, or state downloads from workstations or
+      new IPs.
+    mappings: [T1552.001, T1530]
+    sample_log: |
+      {"eventVersion":"1.10","userIdentity":{"type":"AssumedRole","arn":"arn:aws:sts::111122223333:assumed-role/ml-researcher/jsmith","accountId":"111122223333"},"eventTime":"2026-11-12T07:30:41Z","eventSource":"s3.amazonaws.com","eventName":"GetObject","awsRegion":"us-east-1","sourceIPAddress":"198.51.100.14","userAgent":"[aws-cli/2.17.40 Python/3.11.9 Linux/6.8.0]","requestParameters":{"bucketName":"corp-tf-state-prod","key":"gpu-platform/terraform.tfstate","Host":"corp-tf-state-prod.s3.us-east-1.amazonaws.com"},"responseElements":null,"additionalEventData":{"bytesTransferredOut":1849211},"readOnly":true,"resources":[{"type":"AWS::S3::Object","ARN":"arn:aws:s3:::corp-tf-state-prod/gpu-platform/terraform.tfstate"}],"eventType":"AwsApiCall","managementEvent":false,"recipientAccountId":"111122223333","eventCategory":"Data"}
+
+  - id: CLD-009
+    name: Cross-account role assumed from an unknown external account
+    severity: High
+    description: >-
+      Vendor and partner roles (GPU support, MSPs, data providers) are trusted relationships. Assumptions from an
+      account ID not on the vendor register, or from unexpected IPs, point to a compromised partner or a backdoored
+      trust policy.
+    log_sources:
+      - AWS CloudTrail (AssumeRole)
+      - Azure Lighthouse / GCP cross-project audit logs
+    detection: >-
+      AssumeRole into the organization where the caller's account ID is not in the approved-partner list, or trust
+      policies updated to add new external principals.
+    mappings: [T1199, T1078.004]
+    sample_log: |
+      {"eventVersion":"1.10","userIdentity":{"type":"AWSAccount","principalId":"AIDAEXAMPLEEXT0001","accountId":"999988887777"},"eventTime":"2026-11-12T08:12:55Z","eventSource":"sts.amazonaws.com","eventName":"AssumeRole","awsRegion":"us-east-1","sourceIPAddress":"203.0.113.140","userAgent":"aws-sdk-go-v2/1.30.3","requestParameters":{"roleArn":"arn:aws:iam::111122223333:role/vendor-gpu-support","roleSessionName":"support-8812","durationSeconds":3600},"responseElements":{"credentials":{"accessKeyId":"ASIAEXAMPLEKEY000002"},"assumedRoleUser":{"assumedRoleId":"AROAEXAMPLEROLE2:support-8812","arn":"arn:aws:sts::111122223333:assumed-role/vendor-gpu-support/support-8812"}},"readOnly":true,"eventType":"AwsApiCall","recipientAccountId":"111122223333"}

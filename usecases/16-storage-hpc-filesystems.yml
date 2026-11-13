@@ -1,0 +1,126 @@
+category: Storage & HPC Filesystems
+code: STO
+layer: GPU & Physical Infrastructure
+added: true
+scope: Lustre, IBM Storage Scale (GPFS), WEKA, VAST, NFS, GPUDirect Storage, dataset ingest
+usecases:
+
+  - id: STO-001
+    name: Mass delete or rename on checkpoint and dataset filesystems
+    severity: Critical
+    description: >-
+      Thousands of unlinks or renames in minutes on parallel filesystems holding checkpoints and datasets look like
+      ransomware or sabotage. Weeks of GPU time can disappear in one command.
+    log_sources:
+      - Lustre changelogs
+      - IBM Storage Scale file audit logging
+      - WEKA / VAST audit events
+    detection: >-
+      More than 10,000 UNLNK or RENME records from one uid or client NID in 10 minutes under checkpoint or dataset
+      paths, or renames to unusual extensions.
+    mappings: [T1485, T1486]
+    sample_log: |
+      48211904 06UNLNK 23:41:02.118811042 2026.11.12 0x1 t=[0x200000402:0xa046:0x0] j=rm.1042 ef=0xf u=1042:1042 nid=10.90.3.17@o2ib p=[0x200000402:0x1:0x0] model-00001-of-00030.safetensors
+      48211905 06UNLNK 23:41:02.118934110 2026.11.12 0x1 t=[0x200000402:0xa047:0x0] j=rm.1042 ef=0xf u=1042:1042 nid=10.90.3.17@o2ib p=[0x200000402:0x1:0x0] model-00002-of-00030.safetensors
+      48211906 08RENME 23:41:02.119021553 2026.11.12 0x0 t=[0x200000402:0xa048:0x0] j=python3.1042 ef=0xf u=1042:1042 nid=10.90.3.17@o2ib p=[0x200000402:0x1:0x0] step-120000.pt s=[0x200000402:0xa048:0x0] sp=[0x200000402:0x1:0x0] step-120000.pt.locked
+
+  - id: STO-002
+    name: NFS export opened to everyone or root squash removed
+    severity: High
+    description: >-
+      An export rule with clientmatch 0.0.0.0/0 or no root squashing lets any host on the network mount datasets and
+      act as root on the files.
+    log_sources:
+      - Storage array command audit logs (NetApp ONTAP, Pure, PowerScale)
+      - File integrity monitoring on /etc/exports
+    detection: >-
+      Export policy rules or /etc/exports entries with world or broad client matches, superuser or no_root_squash
+      access, or rw access added to dataset exports outside change control.
+    mappings: [T1039]
+    sample_log: |
+      Thu Nov 12 2026 14:02:31 +00:00 [kern_audit:info:2112] 8003e8000000a1b2 :: cluster1-01:ssh :: 10.20.31.144:52211 :: cluster1:admin :: vserver export-policy rule create -vserver svm-ai -policyname datasets -clientmatch 0.0.0.0/0 -rorule any -rwrule any -superuser any :: Success
+
+  - id: STO-003
+    name: Dataset filesystem mounted by an unknown client
+    severity: High
+    description: >-
+      Parallel filesystems trust their clients. A Lustre or NFS mount from a host that is not in the GPU or storage
+      inventory can read every dataset the mount exposes.
+    log_sources:
+      - NFS server logs (rpc.mountd)
+      - Lustre MDS / MGS kernel logs
+    detection: >-
+      Mount or client-connect events from IPs or NIDs not in the approved client inventory, or from tenant subnets not
+      entitled to that filesystem.
+    mappings: [T1039]
+    sample_log: |
+      Nov 12 14:20:11 nfs-ds-01 rpc.mountd[1234]: authenticated mount request from 10.88.4.201:812 for /export/datasets (/export/datasets)
+      Nov 12 14:21:40 mds-01 kernel: Lustre: datasets-MDT0000: Connection restored to 5c2e8b91-d04f-4a36-8e1b-9c58d2f6a0e4 (at 10.88.4.201@tcp)
+
+  - id: STO-004
+    name: One job reading far more data than any training run should
+    severity: Medium
+    description: >-
+      Lustre job stats attribute I/O to a job or process. Tens of terabytes read by rsync, tar or a job ID with no
+      matching Slurm job is staging for exfiltration, not training.
+    log_sources:
+      - Lustre job_stats (OST / MDT)
+      - Slurm accounting
+    detection: >-
+      Read bytes per job_id above 5 TB per hour, or job_ids from copy tools (rsync, tar, cp, rclone) or with no matching
+      scheduler job, on restricted dataset OSTs.
+    mappings: [T1074, T1039]
+    sample_log: |
+      obdfilter.datasets-OST0007.job_stats=
+      job_stats:
+      - job_id:          rsync.1042
+        snapshot_time:   1794493355.118
+        read_bytes:      { samples: 4120511, unit: bytes, min: 4096, max: 4194304, sum: 17312880443392 }
+        write_bytes:     { samples: 0, unit: bytes, min: 0, max: 0, sum: 0 }
+
+  - id: STO-005
+    name: New storage admin account or role change
+    severity: High
+    description: >-
+      Storage admins can change exports, delete snapshots and read any volume. New local admin accounts are a
+      persistence mechanism that survives directory password resets.
+    log_sources:
+      - Storage array command audit logs (ONTAP, VAST VMS, WEKA)
+    detection: >-
+      Creation of local admin users, role escalation to admin, or new API tokens on storage arrays, outside identity
+      governance workflows.
+    mappings: [T1136, T1098]
+    sample_log: |
+      Thu Nov 12 2026 15:12:44 +00:00 [kern_audit:info:2112] 8003e8000000a1c9 :: cluster1-01:ssh :: 10.20.31.144:52230 :: cluster1:admin :: security login create -user-or-group-name tmpadmin -application ssh -authentication-method password -role admin :: Success
+
+  - id: STO-006
+    name: Ingest servers pulling data from unapproved external sources
+    severity: Medium
+    description: >-
+      Datasets pulled from unvetted mirrors can carry poisoned samples, licensing problems or malware. Ingest hosts
+      should only download from approved sources.
+    log_sources:
+      - Web proxy logs (ingest subnet)
+      - Data ingest pipeline logs
+    detection: >-
+      Downloads above 1 GB from ingest hosts to domains not on the dataset-source allow-list, or new sources added to
+      ingest jobs without a data-governance review.
+    mappings: [AML.T0020, AML.T0010.002, T1105]
+    sample_log: |
+      1794496321.441 88213 10.90.5.21 TCP_TUNNEL/200 48211231231 CONNECT datasets-mirror.example.org:443 svc-ingest HIER_DIRECT/198.51.100.88 -
+
+  - id: STO-007
+    name: Restricted dataset directory opened up with broad permissions
+    severity: Medium
+    description: >-
+      A chmod -R 777 or a widened ACL on a restricted dataset (medical imaging, customer data) exposes it to every
+      cluster user, and through them to every job and notebook.
+    log_sources:
+      - IBM Storage Scale file audit logging
+      - Lustre changelogs (SATTR records)
+    detection: >-
+      ACLCHANGE or permission changes on paths tagged restricted that grant world or broad-group access, or bulk
+      permission changes over 1,000 files.
+    mappings: [T1222.002]
+    sample_log: |
+      {"LWE_JSON":"0.0.2","path":"/gpfs/datasets/restricted/med-imaging/","clusterName":"scale.corp.example","nodeName":"ingest-02","nfsClientIp":"","fsName":"datasets","event":"ACLCHANGE","inode":"120034","linkCount":"2","openFlags":"0","poolName":"system","fileSize":"4096","ownerUserId":"1042","ownerGroupId":"1042","atime":"2026-11-12_15:40:02+0000","ctime":"2026-11-12_15:40:02+0000","mtime":"2026-11-10_08:12:44+0000","eventTime":"2026-11-12_15:40:02+0000","clientUserId":"1042","clientGroupId":"1042","processId":"88231","permissions":"200040777","acls":null,"xattrs":null,"subEvent":"NONE"}

