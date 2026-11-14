@@ -108,9 +108,9 @@ JSON-looking sample logs that do not parse.
 
 ## Publishing
 
-The site is static and is served by GitHub Pages from the `main` branch root
-(**Settings → Pages → Build and deployment → Deploy from a branch → `main` / `(root)`**). `.nojekyll` makes Pages
-serve the files as-is.
+The site is static. `.github/workflows/pages.yml` publishes it to GitHub Pages on every push to `main`, and you can
+re-run it by hand from the Actions tab. One-time setup: **Settings → Pages → Build and deployment → Source →
+GitHub Actions**. (`.nojekyll` also keeps the site working if you switch to *Deploy from a branch → `main` / `(root)`*.)
 
 ## Notes
 
